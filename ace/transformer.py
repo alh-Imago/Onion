@@ -261,11 +261,25 @@ def decompress(
     written = []
     if is_manifest(current):
         files = manifest_unpack(current)
-        print(f"  [Transformer] Manifest: {len(files)} file(s) → {dest_path}/")
-        os.makedirs(dest_path, exist_ok=True)
-        written = manifest_extract(files, dest_path)
-        for path in written:
-            print(f"  [Transformer]   {os.path.relpath(path, dest_path)}")
+        if len(files) == 1:
+            # Single-file archive: write directly to dest_path as a file,
+            # not dest_path/original_name as a directory. Every archive
+            # goes through the manifest bundler (even one file), so
+            # without this the old behaviour created a directory named
+            # dest_path containing a file of the SAME name nested inside
+            # it (e.g. `report.pdf` -> a `report.pdf/` folder holding
+            # `report.pdf/report.pdf`) -- confusing for the common case
+            # of "just give me my file back."
+            _, data = files[0]
+            _atomic_write(dest_path, data)
+            written = [dest_path]
+            print(f"  [Transformer] Restored → {dest_path}  ({len(data):,} bytes)")
+        else:
+            print(f"  [Transformer] Manifest: {len(files)} file(s) → {dest_path}/")
+            os.makedirs(dest_path, exist_ok=True)
+            written = manifest_extract(files, dest_path)
+            for path in written:
+                print(f"  [Transformer]   {os.path.relpath(path, dest_path)}")
     else:
         _atomic_write(dest_path, current)
         written = [dest_path]
@@ -293,6 +307,35 @@ def decompress(
                 else:
                     print(f"    {k:<16}: {v}")
 
+    return written
+
+
+# ── Public: remove the wrapper (restore original file(s), delete the .onion) ─
+
+def unwrap(src_path: str, password: str = "") -> List[str]:
+    """
+    Restore the original file(s) from *src_path* and then delete the
+    .onion archive itself -- "undo the onion-ification," not a plain
+    delete. Distinct from a destructive delete: no data is lost, the
+    original content comes back exactly, the wrapper is just gone.
+
+    Destination is derived automatically (strip the .onion extension,
+    same convention as the CLI's default -d behaviour). Refuses to
+    overwrite an existing file/directory at that destination -- this is
+    a safety guard, not something to silently clobber.
+    """
+    if not os.path.isfile(src_path):
+        raise ValueError(f"Archive not found: {src_path}")
+
+    dest_path = src_path[:-6] if src_path.lower().endswith(".onion") else src_path + ".unwrapped"
+    if not dest_path:
+        raise ValueError(f"Could not derive a destination name from: {src_path}")
+    if os.path.exists(dest_path):
+        raise ValueError(f"Destination already exists, refusing to overwrite: {dest_path}")
+
+    written = decompress(src_path, dest_path, password=password)
+    os.remove(src_path)
+    print(f"  [Transformer] Wrapper removed -- {src_path} deleted, original restored at {dest_path}")
     return written
 
 

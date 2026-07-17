@@ -310,6 +310,54 @@ def _verify(args):
         print(f"  Error: {e}\n", file=sys.stderr); sys.exit(1)
 
 
+def _unwrap(args):
+    from .transformer import unwrap
+    from .header      import unpack_header
+
+    src = args.unwrap_file
+    if not os.path.isfile(src):
+        print(f"Error: file not found: {src}", file=sys.stderr); sys.exit(1)
+
+    with open(src, "rb") as f: raw = f.read()
+    iset, _, _ = unpack_header(raw)
+
+    password = ""
+    if iset.encrypt:
+        if args.password:
+            password = args.password
+        else:
+            password = getpass.getpass("Enter decryption password: ")
+        if not password:
+            print("Error: archive is encrypted but no password supplied.",
+                  file=sys.stderr); sys.exit(1)
+
+    print(f"\nOnion — removing wrapper: {src}")
+    try:
+        written = unwrap(src, password=password)
+        print(f"\nDone. Original restored, archive wrapper removed. {len(written)} file(s).\n")
+    except ValueError as e:
+        print(f"  Error: {e}\n", file=sys.stderr); sys.exit(1)
+
+
+def _delete(args):
+    src = args.delete_file
+    if not os.path.isfile(src):
+        print(f"Error: file not found: {src}", file=sys.stderr); sys.exit(1)
+    if not src.lower().endswith(".onion"):
+        print(f"Error: not a .onion archive: {src}", file=sys.stderr); sys.exit(1)
+
+    if not args.yes:
+        print(f"\nThis will PERMANENTLY delete the archive (no extraction, no undo):")
+        print(f"  {src}")
+        confirm = input("Type 'yes' to confirm: ").strip().lower()
+        if confirm != "yes":
+            print("Cancelled -- nothing was deleted.\n")
+            return
+
+    os.remove(src)
+    print(f"\nDeleted: {src}\n")
+
+
 def _search(args):
     from .search import search
 
@@ -386,6 +434,14 @@ def main():
                         help="update metadata block without recompressing")
     parser.add_argument("--verify",   dest="verify_file",   metavar="FILE",
                         help="verify HMAC-SHA256 signature")
+    parser.add_argument("--unwrap", dest="unwrap_file", metavar="FILE",
+                        help="restore the original file(s) from FILE.onion, then delete the "
+                             "archive -- undoes the wrapper, no data lost. Distinct from --delete.")
+    parser.add_argument("--delete", dest="delete_file", metavar="FILE",
+                        help="permanently delete FILE.onion with NO extraction -- irreversible. "
+                             "Prompts for confirmation unless --yes is given.")
+    parser.add_argument("--yes", dest="yes", action="store_true",
+                        help="skip the confirmation prompt for --delete (for scripting)")
     parser.add_argument("--search", dest="search_paths", metavar="PATH", nargs="+",
                         help="search .onion archives under PATH(s) by metadata")
     parser.add_argument("--web", dest="web_paths", metavar="PATH", nargs="+",
@@ -436,6 +492,8 @@ def main():
     elif args.inspect_file:    _inspect(args)
     elif args.set_meta_file:   _set_meta(args)
     elif args.verify_file:     _verify(args)
+    elif args.unwrap_file:     _unwrap(args)
+    elif args.delete_file:     _delete(args)
     elif args.search_paths:    _search(args)
     elif args.web_paths:       _web(args)
     else:

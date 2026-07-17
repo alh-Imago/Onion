@@ -208,6 +208,58 @@ def _make_handler(default_paths):
                     self._send(500, body, "application/json")
                 return
 
+            if parsed.path == "/api/unwrap":
+                from .transformer import unwrap
+                from .header      import unpack_header
+
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    payload  = json.loads(self.rfile.read(length).decode("utf-8"))
+                    path     = payload.get("path", "")
+                    password = payload.get("password") or ""
+
+                    if not os.path.isfile(path) or not path.lower().endswith(".onion"):
+                        raise ValueError(f"Not a valid .onion archive path: {path!r}")
+
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                    iset, _, _ = unpack_header(raw)
+                    if iset.encrypt and not password:
+                        raise ValueError("This archive is encrypted -- a password is required to unwrap it.")
+
+                    written = unwrap(path, password=password)
+                    body = json.dumps({"ok": True, "written": written}).encode("utf-8")
+                    self._send(200, body, "application/json")
+                except Exception as e:
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(400, body, "application/json")
+                return
+
+            if parsed.path == "/api/delete":
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    path    = payload.get("path", "")
+                    confirm = payload.get("confirm") is True
+
+                    # Defense in depth: the frontend has its own two-step
+                    # confirmation UI, but this endpoint also requires an
+                    # explicit confirm:true in the payload -- a stray or
+                    # scripted POST without it is refused rather than
+                    # silently deleting something irreversible.
+                    if not confirm:
+                        raise ValueError("Deletion requires explicit confirmation (confirm: true).")
+                    if not os.path.isfile(path) or not path.lower().endswith(".onion"):
+                        raise ValueError(f"Not a valid .onion archive path: {path!r}")
+
+                    os.remove(path)
+                    body = json.dumps({"ok": True}).encode("utf-8")
+                    self._send(200, body, "application/json")
+                except Exception as e:
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(400, body, "application/json")
+                return
+
             self._send(404, b"Not found", "text/plain")
 
     return Handler
@@ -484,6 +536,25 @@ PAGE_HTML = r"""<!DOCTYPE html>
   button.ghost { background: transparent; border-color: var(--border); color: var(--text); }
   button.ghost:hover { border-color: var(--accent); color: var(--accent); }
   button.ghost:active { background: var(--bg); }
+  button.danger {
+    font-family: inherit; font-size: 0.85rem; font-weight: 500;
+    padding: 9px 16px; border-radius: 7px; cursor: pointer;
+    background: transparent; border: 1px solid var(--badge-enc); color: var(--badge-enc);
+    min-height: 40px; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  button.danger:hover, button.danger:active { background: var(--badge-bg); }
+  button.danger.danger-armed { background: var(--badge-enc); color: #fff; }
+
+  .archive-actions {
+    margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+    display: none; flex-wrap: wrap; gap: 8px; align-items: center;
+  }
+  .archive.open .archive-actions { display: flex; }
+  .unwrap-password {
+    flex: 1; min-width: 140px; padding: 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", monospace; font-size: 16px;
+  }
+  .action-status { font-size: 0.76rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
 
   .status { font-size: 0.8rem; color: var(--muted); margin: 4px 2px 16px; font-family: "IBM Plex Mono", monospace; }
 
@@ -929,6 +1000,14 @@ PAGE_HTML = r"""<!DOCTYPE html>
           '<div class="meta-note">Removing a row and saving deletes that field. There is no undo -- re-add it manually if needed.</div>' +
         '</div>';
 
+      var actionsHtml =
+        '<div class="archive-actions">' +
+          (r.encrypted ? '<input type="password" class="unwrap-password" placeholder="password to unwrap">' : '') +
+          '<button type="button" class="ghost unwrap-btn">Remove wrapper (restore file)</button>' +
+          '<button type="button" class="danger delete-btn">Delete archive</button>' +
+          '<span class="action-status"></span>' +
+        '</div>';
+
       card.innerHTML =
         '<div class="head"><span class="path">' + escapeHtml(r.path) + '</span><span class="badges">' + encBadge + tagsHtml + '</span></div>' +
         '<div class="meta-line">' + r.original_size.toLocaleString() + ' bytes original &middot; ' + r.layer_count + ' layer(s)' +
@@ -937,7 +1016,65 @@ PAGE_HTML = r"""<!DOCTYPE html>
         contentsHtml +
         sigHtml +
         metaEditorHtml +
+        actionsHtml +
         '<div class="peel-hint">click to peel open &#8595;</div>';
+
+      var actionsEl = card.querySelector('.archive-actions');
+      actionsEl.addEventListener('click', function(e) { e.stopPropagation(); });
+      actionsEl.addEventListener('keydown', function(e) { e.stopPropagation(); });
+
+      actionsEl.querySelector('.unwrap-btn').addEventListener('click', function() {
+        var statusEl = actionsEl.querySelector('.action-status');
+        var pwInput = actionsEl.querySelector('.unwrap-password');
+        var password = pwInput ? pwInput.value : '';
+        statusEl.textContent = 'Removing wrapper...';
+        fetch('/api/unwrap', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: r.path, password: password }),
+        }).then(function(res) { return res.json(); }).then(function(result) {
+          if (result.ok) {
+            statusEl.textContent = 'Restored. Refreshing...';
+            setTimeout(doSearch, 700);
+          } else {
+            statusEl.textContent = 'Error: ' + result.error;
+          }
+        }).catch(function(err) { statusEl.textContent = 'Request failed: ' + err; });
+      });
+
+      var deleteBtn = actionsEl.querySelector('.delete-btn');
+      var deleteArmed = false, deleteTimer = null;
+      deleteBtn.addEventListener('click', function() {
+        var statusEl = actionsEl.querySelector('.action-status');
+        if (!deleteArmed) {
+          deleteArmed = true;
+          deleteBtn.textContent = 'Really delete? Click again (6s)';
+          deleteBtn.classList.add('danger-armed');
+          deleteTimer = setTimeout(function() {
+            deleteArmed = false;
+            deleteBtn.textContent = 'Delete archive';
+            deleteBtn.classList.remove('danger-armed');
+          }, 6000);
+          return;
+        }
+        clearTimeout(deleteTimer);
+        deleteArmed = false;
+        deleteBtn.textContent = 'Delete archive';
+        deleteBtn.classList.remove('danger-armed');
+        statusEl.textContent = 'Deleting...';
+        fetch('/api/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: r.path, confirm: true }),
+        }).then(function(res) { return res.json(); }).then(function(result) {
+          if (result.ok) {
+            statusEl.textContent = 'Deleted.';
+            setTimeout(doSearch, 500);
+          } else {
+            statusEl.textContent = 'Error: ' + result.error;
+          }
+        }).catch(function(err) { statusEl.textContent = 'Request failed: ' + err; });
+      });
 
       var metaEditorEl = card.querySelector('.meta-editor');
       metaEditorEl.addEventListener('click', function(e) { e.stopPropagation(); });
