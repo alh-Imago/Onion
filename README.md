@@ -129,17 +129,79 @@ still read today's archives.
 
 ## Algorithms
 
-| ID   | Name         | Best for                            |
-|------|--------------|-------------------------------------|
-| 0x00 | Raw          | Already-compressed files            |
-| 0x01 | RLE          | Repeated byte runs, sparse data     |
-| 0x02 | LZ77         | General text, code, documents (32KB window, hash-chain match finder) |
-| 0x03 | Huffman      | After LZ77 (skewed symbol dist.)    |
-| 0x04 | AES-256-GCM  | Encryption — always the last layer  |
+| ID   | Name               | Best for                            |
+|------|--------------------|--------------------------------------|
+| 0x00 | Raw                | Already-compressed files, `--no-compress` |
+| 0x01 | RLE                | Repeated byte runs, sparse data     |
+| 0x02 | LZ77               | General text, code, documents (32KB window, hash-chain match finder) |
+| 0x03 | Huffman            | After LZ77 (skewed symbol dist.)    |
+| 0x04 | AES-256-GCM        | Encryption — always the last layer  |
+| 0x05 | Delta              | Structured binary/numeric data (sensor logs, float arrays, time-series) |
+| 0x06 | LZMA               | Text/code/JSON — replaces LZ77+Huffman, ~98% reduction |
+| 0x07 | LZ4                | `--fast` mode — microsecond speed, slightly lower ratio |
+| 0x08 | LZ77+SplitHuffman  | Experimental, opt-in only — see dedicated section below |
 
-Both LZ77 and Huffman are backed by C extensions (60–278× faster than
-pure Python). Pure-Python fallbacks are included for environments where
-the extensions haven't been built.
+LZ77 and Huffman are backed by C extensions (60–278× faster than pure
+Python). Pure-Python fallbacks are included for environments where the
+extensions haven't been built. Split-stream Huffman (0x08) is pure
+Python only — see below for why that matters.
+
+---
+
+### Split-stream Huffman: `--split-huffman`
+
+An experimental alternative to the default "LZ77 → Huffman" pipeline,
+built as a standalone algorithm the same way LZMA is — not a
+modification of LZ77 or Huffman, a self-contained third option. Uses its
+own LZ77 tokenizer and Huffman-codes the literal/match-length stream
+with its own tree, separate from match distances.
+
+**Never selected automatically.** The Strategist's normal decision tree
+never picks this — it only runs when explicitly requested via
+`--split-huffman` (CLI) or the checkbox in the web UI's "+ New Archive"
+dialog. This is deliberate, not a missing feature: it is genuinely not a
+universal improvement.
+
+**Measured** against the default C-accelerated LZ77+Huffman pipeline
+across six representative data types:
+
+| Data type | vs. default |
+|-----------|--------------|
+| Random / incompressible data | ~5% smaller |
+| Highly repetitive patterns | ~56% smaller |
+| JSON-like structured data | ~1% smaller |
+| General structured log/text | ~6% **larger** |
+| Real source code | ~4% **larger** |
+| Small files (under ~1KB) | ~30–40% **larger** |
+
+There's no reliable way to predict which way it'll go for a given file
+without trying it — small files lose to fixed per-stream header
+overhead; typical prose/code doesn't have a skewed-enough match-distance
+distribution to offset that overhead; highly repetitive or
+near-random data benefit the most.
+
+**Also meaningfully slower** — pure Python, no C extension. Expect
+noticeably longer compress times than the default, especially on larger
+files (the web UI shows a time warning when this checkbox is ticked).
+
+```bash
+# Try it and compare against the default
+onion -c data.bin --split-huffman -o data_split.onion
+onion -c data.bin -o data_default.onion
+ls -la data_split.onion data_default.onion
+```
+
+Two real bugs were found and fixed while building this (not just
+theorised about — both confirmed with before/after measurements):
+naively Huffman-coding raw match distances made files dramatically
+*larger* on typical text (thousands of near-unique distance values cost
+more in header overhead than they save — fixed with an adaptive mode
+that tries both a raw and a Huffman encoding of the distances and keeps
+whichever is smaller); and a naive brute-force matcher didn't just run
+slower than the C-accelerated default, it could *hang* — 20KB of a
+repeated byte failed to complete in 60 seconds. Replaced with a
+hash-chain matcher (capped candidate search per position), fixing that
+specific case to under 0.01s.
 
 ---
 
@@ -480,9 +542,12 @@ single-page search-and-browse UI at `http://127.0.0.1:<port>/`.
   matching what the CLI's mixed-path compress already supports), a
   password field (blank = no encryption), a "No compression (store raw)"
   checkbox for search-only wrapping without running any compression
-  algorithm, a destination field, and the same metadata editor used
-  elsewhere. Calls the same `analyse()` → `compress_files()` pipeline the
-  CLI uses, not a separate reimplementation of it.
+  algorithm, an experimental "split-stream Huffman" checkbox (with an
+  inline time warning that appears when ticked — pure Python, genuinely
+  mixed results, see the dedicated section above before relying on it),
+  a destination field, and the same metadata editor used elsewhere.
+  Calls the same `analyse()` → `compress_files()` pipeline the CLI uses,
+  not a separate reimplementation of it.
 - **Encrypted archives** show a 🔒 lock icon in the results.
 - **Signature display** — an HMAC signature (if present) is shown
   read-only (truncated hash, full value on hover) with a key field and
@@ -571,6 +636,7 @@ automatically, using the same glob syntax as `.gitignore`.
 | `--fast` | Use LZ4 instead of LZ77/LZMA — microsecond speed, slightly lower ratio. Requires `pip install lz4`. |
 | `--encrypt-only` | Skip compression entirely, AES-256-GCM only. Implies `-e`. For files already compressed, or when speed and confidentiality matter more than size. |
 | `--no-compress` | Skip compression entirely, **independent** of encryption — unlike `--encrypt-only`, doesn't require `-e`. The point is the header/TOC/META wrapper (searchable via `--search`/`-i`), not size reduction. Combine with `-e` if you also want encryption. |
+| `--split-huffman` | **Experimental, opt-in only, never automatic.** Separate Huffman trees for literals vs match data. Pure Python (slower). Genuinely mixed results — see the "Split-stream Huffman" section above. |
 
 ```bash
 # Fast compress + encrypt (good for large already-structured files)
@@ -584,6 +650,9 @@ onion -c video_master.mov --no-compress --meta project="Q3 launch" --meta tags=v
 
 # Store raw AND encrypted
 onion -c classified_photos/ --no-compress -e -p "secret"
+
+# Try the experimental split-stream Huffman algorithm
+onion -c data.bin --split-huffman
 
 # Normal (Strategist picks best algorithm automatically)
 onion -c report.pdf
@@ -697,15 +766,25 @@ and hours.
 - Recursive exclude patterns (`**/node_modules`) in the ignore system
 - ~~LZ4 fast-mode layer~~ ✓ done (0x07) — `--fast` flag, microsecond speed,
   ratio ≈ LZ77+Huffman on text, requires `pip install lz4`
-- Delta encoding layer — pre-conditioner for structured binary data
-  (sensor logs, floating-point arrays, time-series): byte-reorder then
-  difference adjacent values before LZ77. Transforms smooth data into
-  near-zero deltas which compress far better than raw values.
+- ~~Delta encoding layer~~ ✓ done (0x05) — pre-conditioner for structured
+  binary data (sensor logs, floating-point arrays, time-series):
+  byte-reorder then difference adjacent values before LZ77. Selected
+  automatically by the Strategist when data clears a smoothness
+  threshold (measured: 98% smoothness → 97.6% reduction on a synthetic
+  ramp, byte-identical round-trip). This entry sat here unmarked for a
+  while after the code already shipped — a documentation gap, not a
+  code gap.
 - ~~LZMA layer~~ ✓ done (0x06) — stdlib lzma, no dependency, replaces LZ77+Huffman
   on text/code/JSON (~98% reduction, matches gzip-9)
-- Split-stream Huffman — separate Huffman trees for literals vs
-  back-reference lengths/offsets (same idea as deflate). Would close
-  most of the remaining ratio gap with gzip without changing LZ77.
+- ~~Split-stream Huffman~~ ✓ done (0x08) — `--split-huffman` / web UI
+  checkbox, **experimental and opt-in only, never chosen automatically**.
+  Pure Python (no C acceleration, meaningfully slower), and genuinely
+  mixed results rather than a universal improvement: smaller on
+  random/incompressible data (~5%) and highly repetitive patterns
+  (~56%), but *larger* on typical source code (~4%), small files under
+  1KB (~30-40%, fixed header overhead dominates), and general
+  structured text (~6%). See the "Split-stream Huffman" section below
+  for the full picture and why.
 - ~~Metadata search across archives~~ ✓ done — `--search`, payload-blind,
   matches on `--meta` fields and freetext (including filenames via TOC)
 - ~~Directory contents without decompression~~ ✓ done — TOC block,
