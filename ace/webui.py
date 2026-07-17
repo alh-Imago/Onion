@@ -49,6 +49,13 @@ def _make_handler(default_paths):
                 self._send(200, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
 
+            if parsed.path == "/api/browse":
+                qs = urllib.parse.parse_qs(parsed.query)
+                requested = (qs.get("path") or [os.path.expanduser("~")])[0]
+                body = json.dumps(_browse(requested)).encode("utf-8")
+                self._send(200, body, "application/json")
+                return
+
             if parsed.path == "/api/search":
                 qs = urllib.parse.parse_qs(parsed.query)
                 paths = qs.get("path") or default_paths
@@ -89,6 +96,36 @@ def run(paths, port=8000):
     except KeyboardInterrupt:
         print("\n  [WebUI] Stopped.")
         httpd.shutdown()
+
+
+def _browse(requested_path):
+    """
+    List subdirectories of *requested_path* for the folder-browser modal.
+    Local-only concern: this server binds to 127.0.0.1, so it exposes no
+    more than what's already reachable via --search on any path the
+    server process can read -- listing directory NAMES (not file
+    contents) is no more permissive than that.
+    """
+    path = os.path.abspath(os.path.expanduser(requested_path or "~"))
+    if not os.path.isdir(path):
+        path = os.path.expanduser("~")
+
+    dirs = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                        dirs.append(entry.name)
+                except OSError:
+                    continue  # unreadable entry (permissions, broken symlink, etc.) -- skip
+    except PermissionError:
+        pass  # can't list this directory at all -- return it with an empty dir list
+
+    dirs.sort(key=str.lower)
+    parent = os.path.dirname(path) if path != os.path.dirname(path) else None
+
+    return {"path": path, "parent": parent, "dirs": dirs}
 
 
 PAGE_HTML = r"""<!DOCTYPE html>
@@ -180,6 +217,50 @@ PAGE_HTML = r"""<!DOCTYPE html>
     font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.85rem;
   }
   .field { flex: 1; min-width: 160px; }
+  .path-row { display: flex; gap: 8px; }
+  .path-row input { flex: 1; }
+  .path-row button { white-space: nowrap; }
+
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(10,16,15,0.45);
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow);
+    width: min(520px, 92vw); max-height: 78vh;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+    font-weight: 600; font-size: 0.95rem;
+  }
+  .modal-head button { border: none; background: none; font-size: 1.1rem; color: var(--muted); cursor: pointer; }
+  .modal-head button:hover { color: var(--badge-enc); }
+  .breadcrumb {
+    padding: 10px 16px; font-family: "IBM Plex Mono", monospace; font-size: 0.76rem;
+    color: var(--muted); border-bottom: 1px solid var(--border);
+    white-space: nowrap; overflow-x: auto;
+  }
+  .breadcrumb .seg { cursor: pointer; }
+  .breadcrumb .seg:hover { color: var(--accent); text-decoration: underline; }
+  .breadcrumb .sep { margin: 0 4px; color: var(--border); }
+  .folder-list { overflow-y: auto; padding: 6px 0; flex: 1; }
+  .folder-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; font-size: 0.86rem; cursor: pointer;
+  }
+  .folder-row:hover { background: var(--bg); }
+  .folder-row .icon { color: var(--accent); }
+  .folder-row.up { color: var(--muted); font-style: italic; }
+  .folder-empty { padding: 20px 16px; color: var(--muted); font-size: 0.82rem; text-align: center; }
+  .modal-actions {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 16px; border-top: 1px solid var(--border);
+  }
   .filters-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
   .filter-row { display: flex; gap: 6px; }
   .filter-row input { flex: 1; }
@@ -266,7 +347,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
     <div class="row">
       <div class="field">
         <label for="pathInput">Search path</label>
-        <input type="text" id="pathInput" placeholder="e.g. /home/alan/archives">
+        <div class="path-row">
+          <input type="text" id="pathInput" placeholder="e.g. /home/alan/archives">
+          <button class="ghost" id="browseBtn" type="button">Browse&hellip;</button>
+        </div>
       </div>
     </div>
 
@@ -290,6 +374,21 @@ PAGE_HTML = r"""<!DOCTYPE html>
   <div class="status" id="status">Enter a path above and search, or search with no filters to list everything.</div>
   <div id="results"></div>
 
+</div>
+
+<div class="modal-overlay" id="browseOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Choose a folder">
+    <div class="modal-head">
+      <span>Choose a folder</span>
+      <button class="ghost" id="browseClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div class="folder-list" id="folderList"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="browseCancel" type="button">Cancel</button>
+      <button class="primary" id="browseSelect" type="button">Select this folder</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -334,6 +433,85 @@ PAGE_HTML = r"""<!DOCTYPE html>
     addFilterRow();
     document.getElementById('results').innerHTML = '';
     document.getElementById('status').textContent = 'Enter a path above and search, or search with no filters to list everything.';
+  });
+
+  // ── Folder browser modal ─────────────────────────────────────────────────
+  var browseState = { path: null };
+  var overlay = document.getElementById('browseOverlay');
+
+  function openBrowser() {
+    var start = document.getElementById('pathInput').value.trim() || null;
+    overlay.classList.add('open');
+    loadFolder(start);
+  }
+  function closeBrowser() { overlay.classList.remove('open'); }
+
+  function loadFolder(path) {
+    var url = '/api/browse' + (path ? ('?path=' + encodeURIComponent(path)) : '');
+    fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+      browseState.path = data.path;
+      renderBreadcrumb(data.path);
+      renderFolderList(data);
+    }).catch(function(err) {
+      document.getElementById('folderList').innerHTML =
+        '<div class="folder-empty">Could not read that folder: ' + escapeHtml(String(err)) + '</div>';
+    });
+  }
+
+  function renderBreadcrumb(path) {
+    var el = document.getElementById('breadcrumb');
+    var parts = path.split('/').filter(Boolean);
+    var acc = '';
+    var html = '<span class="seg" data-path="/">/</span>';
+    parts.forEach(function(part) {
+      acc += '/' + part;
+      html += '<span class="sep">/</span><span class="seg" data-path="' + escapeHtml(acc) + '">' + escapeHtml(part) + '</span>';
+    });
+    el.innerHTML = html;
+    el.querySelectorAll('.seg').forEach(function(seg) {
+      seg.addEventListener('click', function() { loadFolder(seg.getAttribute('data-path')); });
+    });
+  }
+
+  function renderFolderList(data) {
+    var el = document.getElementById('folderList');
+    el.innerHTML = '';
+    if (data.parent) {
+      var up = document.createElement('div');
+      up.className = 'folder-row up';
+      up.innerHTML = '<span class="icon">&#8598;</span> .. (up one level)';
+      up.addEventListener('click', function() { loadFolder(data.parent); });
+      el.appendChild(up);
+    }
+    if (!data.dirs || data.dirs.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'folder-empty';
+      empty.textContent = 'No subfolders here.';
+      el.appendChild(empty);
+      return;
+    }
+    data.dirs.forEach(function(name) {
+      var row = document.createElement('div');
+      row.className = 'folder-row';
+      row.innerHTML = '<span class="icon">&#128193;</span> ' + escapeHtml(name);
+      row.addEventListener('click', function() {
+        loadFolder(data.path.replace(/\/$/, '') + '/' + name);
+      });
+      el.appendChild(row);
+    });
+  }
+
+  document.getElementById('browseBtn').addEventListener('click', openBrowser);
+  document.getElementById('browseClose').addEventListener('click', closeBrowser);
+  document.getElementById('browseCancel').addEventListener('click', closeBrowser);
+  document.getElementById('browseSelect').addEventListener('click', function() {
+    document.getElementById('pathInput').value = browseState.path;
+    closeBrowser();
+    doSearch();
+  });
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeBrowser(); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeBrowser();
   });
 
   function escapeHtml(s) {
