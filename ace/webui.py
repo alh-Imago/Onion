@@ -132,6 +132,81 @@ def _make_handler(default_paths):
                     self._send(400, body, "application/json")
                 return
 
+            if parsed.path == "/api/compress":
+                from .analyser    import analyse
+                from .transformer import compress_files
+                from .manifest    import collect
+                from .ignore      import build_matcher
+
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    sources     = payload.get("sources", [])
+                    dest        = payload.get("dest", "")
+                    password    = payload.get("password") or ""
+                    meta_pairs  = payload.get("meta") or None
+
+                    if not sources:
+                        raise ValueError("No files or folders selected.")
+                    for s in sources:
+                        if not os.path.exists(s):
+                            raise ValueError(f"Path not found: {s}")
+                    if not dest:
+                        raise ValueError("No destination filename given.")
+                    if not dest.lower().endswith(".onion"):
+                        dest += ".onion"
+                    if os.path.exists(dest):
+                        raise ValueError(f"Destination already exists: {dest}")
+
+                    base_dir = sources[0] if (len(sources) == 1 and os.path.isdir(sources[0])) else ""
+                    matcher = build_matcher(extra_patterns=[], base_dir=base_dir, use_default_ignores=True)
+                    files, _label = collect(sources, matcher=matcher)
+
+                    if not files:
+                        raise ValueError("No files to compress (everything matched an ignore pattern).")
+
+                    total_data = b"".join(d for _, d in files)
+                    iset = analyse(total_data, encrypt=bool(password))
+                    compress_files(files, iset, dest, password=password,
+                                    audit=True, meta_pairs=meta_pairs, sign_key=None)
+
+                    body = json.dumps({"ok": True, "dest": os.path.abspath(dest),
+                                        "file_count": len(files),
+                                        "total_bytes": len(total_data)}).encode("utf-8")
+                    self._send(200, body, "application/json")
+                except Exception as e:
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(400, body, "application/json")
+                return
+
+            if parsed.path == "/api/verify":
+                from .transformer import verify as verify_archive
+
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    path     = payload.get("path", "")
+                    sign_key = payload.get("sign_key", "")
+
+                    if not os.path.isfile(path) or not path.lower().endswith(".onion"):
+                        raise ValueError(f"Not a valid .onion archive path: {path!r}")
+                    if not sign_key:
+                        raise ValueError("A signing key is required to verify.")
+
+                    valid = verify_archive(path, sign_key)
+                    body = json.dumps({"ok": True, "valid": bool(valid)}).encode("utf-8")
+                    self._send(200, body, "application/json")
+                except ValueError as e:
+                    # verify() itself raises ValueError for "no META block"
+                    # etc -- distinct from a genuinely invalid signature,
+                    # which returns valid:false rather than raising.
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(400, body, "application/json")
+                except Exception as e:
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(500, body, "application/json")
+                return
+
             self._send(404, b"Not found", "text/plain")
 
     return Handler
@@ -153,32 +228,38 @@ def run(paths, port=8000):
 
 def _browse(requested_path):
     """
-    List subdirectories of *requested_path* for the folder-browser modal.
-    Local-only concern: this server binds to 127.0.0.1, so it exposes no
-    more than what's already reachable via --search on any path the
-    server process can read -- listing directory NAMES (not file
-    contents) is no more permissive than that.
+    List subdirectories AND files of *requested_path*, for both the
+    search-path folder picker and the archive-creation file/folder
+    picker. Local-only concern: this server binds to 127.0.0.1, so it
+    exposes no more than what's already reachable via --search on any
+    path the server process can read -- listing directory/file NAMES
+    (not file contents) is no more permissive than that.
     """
     path = os.path.abspath(os.path.expanduser(requested_path or "~"))
     if not os.path.isdir(path):
         path = os.path.expanduser("~")
 
-    dirs = []
+    dirs, files = [], []
     try:
         with os.scandir(path) as it:
             for entry in it:
                 try:
-                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
                         dirs.append(entry.name)
+                    elif entry.is_file(follow_symlinks=False):
+                        files.append({"name": entry.name, "size": entry.stat().st_size})
                 except OSError:
                     continue  # unreadable entry (permissions, broken symlink, etc.) -- skip
     except PermissionError:
-        pass  # can't list this directory at all -- return it with an empty dir list
+        pass  # can't list this directory at all -- return it with empty lists
 
     dirs.sort(key=str.lower)
+    files.sort(key=lambda f: f["name"].lower())
     parent = os.path.dirname(path) if path != os.path.dirname(path) else None
 
-    return {"path": path, "parent": parent, "dirs": dirs}
+    return {"path": path, "parent": parent, "dirs": dirs, "files": files}
 
 
 PAGE_HTML = r"""<!DOCTYPE html>
@@ -239,6 +320,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     font-family: "IBM Plex Mono", ui-monospace, monospace;
     font-size: 0.72rem; color: var(--muted); margin-top: 2px;
   }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
 
   button.theme-toggle {
     background: var(--surface); border: 1px solid var(--border);
@@ -289,6 +371,18 @@ PAGE_HTML = r"""<!DOCTYPE html>
     width: min(520px, 92vw); max-height: 78vh;
     display: flex; flex-direction: column; overflow: hidden;
   }
+  .modal.modal-wide { width: min(620px, 94vw); }
+  .modal-body-scroll { overflow-y: auto; padding: 14px 16px; flex: 1; -webkit-overflow-scrolling: touch; }
+  .field-block { margin-bottom: 14px; }
+  .field-block label {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); display: block; margin-bottom: 4px;
+  }
+  .field-block input[type=text], .field-block input[type=password] {
+    width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text);
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 16px;
+  }
   .modal-head {
     display: flex; justify-content: space-between; align-items: center;
     padding: 14px 16px; border-bottom: 1px solid var(--border);
@@ -324,6 +418,34 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .folder-row .icon { color: var(--accent); }
   .folder-row.up { color: var(--muted); font-style: italic; }
   .folder-empty { padding: 20px 16px; color: var(--muted); font-size: 0.82rem; text-align: center; }
+
+  .checklist .folder-row { justify-content: space-between; }
+  .checklist .folder-row .left { display: flex; align-items: center; gap: 10px; }
+  .checklist .folder-row input[type=checkbox] {
+    width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer;
+    touch-action: manipulation;
+  }
+  .checklist .folder-row .file-size { color: var(--muted); font-size: 0.72rem; font-family: "IBM Plex Mono", monospace; }
+  .checklist .folder-row .nav-hint { color: var(--muted); font-size: 0.7rem; }
+
+  .selected-summary {
+    margin-top: 10px; padding: 10px 12px; background: var(--bg);
+    border: 1px dashed var(--border); border-radius: 8px;
+  }
+  .selected-summary .toc-tag { font-size: 0.68rem; color: var(--muted); display: block; margin-bottom: 6px; }
+  .selected-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
+  .selected-item {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: "IBM Plex Mono", monospace; font-size: 0.76rem;
+    padding: 4px 6px; background: var(--surface); border-radius: 5px;
+  }
+  .selected-item button {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 0.9rem; min-width: 28px; min-height: 28px;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  .selected-item button:hover, .selected-item button:active { color: var(--badge-enc); }
+  .selected-empty { font-size: 0.76rem; color: var(--muted); font-style: italic; }
   .modal-actions {
     display: flex; justify-content: flex-end; gap: 8px;
     padding: 12px 16px; border-top: 1px solid var(--border);
@@ -424,6 +546,25 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .meta-save-status { font-size: 0.76rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
   .meta-note { font-size: 0.68rem; color: var(--muted); margin-top: 8px; }
 
+  .signature-block {
+    margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+    display: none;
+  }
+  .archive.open .signature-block { display: block; }
+  .signature-block .toc-tag { font-size: 0.65rem; color: var(--muted); margin-bottom: 6px; display: block; }
+  .sig-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .sig-hash {
+    font-family: "IBM Plex Mono", monospace; font-size: 0.78rem;
+    background: var(--bg); padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border);
+  }
+  .sig-key {
+    flex: 1; min-width: 140px; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-family: "IBM Plex Mono", monospace; font-size: 16px;
+  }
+  .sig-status { font-size: 0.76rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
+  .sig-status.sig-valid { color: var(--accent-2); font-weight: 500; }
+  .sig-status.sig-invalid { color: var(--badge-enc); font-weight: 500; }
+
   .peel-hint { font-size: 0.7rem; color: var(--muted); margin-top: 8px; }
   .empty {
     text-align: center; padding: 40px 20px; color: var(--muted);
@@ -462,9 +603,12 @@ PAGE_HTML = r"""<!DOCTYPE html>
       <h1><span class="layers">&#9678;</span> Onion — Archive Search</h1>
       <div class="sub">metadata &amp; contents, read without decompression</div>
     </div>
-    <button class="theme-toggle" id="themeToggle" aria-label="Toggle light or dark theme">
-      <span id="themeIcon">&#9788;</span> <span id="themeLabel">Light</span>
-    </button>
+    <div class="header-actions">
+      <button class="ghost" id="newArchiveBtn" type="button">+ New Archive</button>
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle light or dark theme">
+        <span id="themeIcon">&#9788;</span> <span id="themeLabel">Light</span>
+      </button>
+    </div>
   </header>
 
   <div class="panel">
@@ -511,6 +655,45 @@ PAGE_HTML = r"""<!DOCTYPE html>
     <div class="modal-actions">
       <button class="ghost" id="browseCancel" type="button">Cancel</button>
       <button class="primary" id="browseSelect" type="button">Select this folder</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="newArchiveOverlay">
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="Create new archive">
+    <div class="modal-head">
+      <span>Create New Archive</span>
+      <button class="ghost" id="newArchiveClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body-scroll">
+
+      <div class="field-block">
+        <label for="archivePassword">Password (optional — leave blank for no encryption)</label>
+        <input type="password" id="archivePassword" placeholder="Leave blank for no encryption">
+      </div>
+
+      <label>Browse and check files/folders to include</label>
+      <div class="breadcrumb" id="archiveBreadcrumb"></div>
+      <div class="folder-list checklist" id="archiveFileList"></div>
+
+      <div class="selected-summary" id="selectedSummary">
+        <span class="toc-tag">Selected (0)</span>
+        <div class="selected-list" id="selectedList"></div>
+      </div>
+
+      <div class="field-block" style="margin-top:14px;">
+        <label for="archiveDest">Save as</label>
+        <input type="text" id="archiveDest" placeholder="e.g. /home/alan/archives/my_archive.onion">
+      </div>
+
+      <label>Metadata (optional)</label>
+      <div class="meta-fields" id="newArchiveMetaFields"></div>
+      <button class="ghost" id="newArchiveAddField" type="button">+ Add field</button>
+    </div>
+    <div class="modal-actions">
+      <span class="meta-save-status" id="archiveStatus"></span>
+      <button class="ghost" id="newArchiveCancel" type="button">Cancel</button>
+      <button class="primary" id="newArchiveCreate" type="button">Create Archive</button>
     </div>
   </div>
 </div>
@@ -672,7 +855,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
         var list = Array.isArray(tags) ? tags : [tags];
         tagsHtml = list.map(function(t) { return '<span class="badge">' + escapeHtml(t) + '</span>'; }).join('');
       }
-      var encBadge = r.encrypted ? '<span class="badge enc">encrypted</span>' : '';
+      var encBadge = r.encrypted ? '<span class="badge enc">&#128274; encrypted</span>' : '';
 
       var contentsHtml = '';
       if (r.contents && r.contents.length) {
@@ -699,6 +882,22 @@ PAGE_HTML = r"""<!DOCTYPE html>
           '</div>';
       }).join('');
 
+      var sigHtml = '';
+      if (meta.hmac_sha256) {
+        var hash = String(meta.hmac_sha256);
+        var shortHash = hash.length > 20 ? (hash.slice(0, 10) + '…' + hash.slice(-8)) : hash;
+        sigHtml =
+          '<div class="signature-block">' +
+            '<span class="toc-tag">signature (read-only — not editable here)</span>' +
+            '<div class="sig-row">' +
+              '<code class="sig-hash" title="' + escapeHtml(hash) + '">' + escapeHtml(shortHash) + '</code>' +
+              '<input type="password" class="sig-key" placeholder="signing key to verify">' +
+              '<button type="button" class="ghost verify-sig">Verify</button>' +
+              '<span class="sig-status">present, unverified</span>' +
+            '</div>' +
+          '</div>';
+      }
+
       var metaEditorHtml =
         '<div class="meta-editor">' +
           '<span class="toc-tag">metadata (created/source host preserved automatically, not shown here)</span>' +
@@ -717,12 +916,45 @@ PAGE_HTML = r"""<!DOCTYPE html>
         (r.contents ? ' &middot; ' + r.contents.length + ' file(s)' : '') + '</div>' +
         (meta.description ? '<div class="desc">' + escapeHtml(meta.description) + '</div>' : '') +
         contentsHtml +
+        sigHtml +
         metaEditorHtml +
         '<div class="peel-hint">click to peel open &#8595;</div>';
 
       var metaEditorEl = card.querySelector('.meta-editor');
       metaEditorEl.addEventListener('click', function(e) { e.stopPropagation(); });
       metaEditorEl.addEventListener('keydown', function(e) { e.stopPropagation(); });
+
+      var sigBlockEl = card.querySelector('.signature-block');
+      if (sigBlockEl) {
+        sigBlockEl.addEventListener('click', function(e) { e.stopPropagation(); });
+        sigBlockEl.addEventListener('keydown', function(e) { e.stopPropagation(); });
+        sigBlockEl.querySelector('.verify-sig').addEventListener('click', function() {
+          var keyInput = sigBlockEl.querySelector('.sig-key');
+          var statusEl = sigBlockEl.querySelector('.sig-status');
+          var key = keyInput.value;
+          if (!key) { statusEl.textContent = 'Enter a key first'; statusEl.className = 'sig-status'; return; }
+          statusEl.textContent = 'Verifying...';
+          fetch('/api/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: r.path, sign_key: key }),
+          }).then(function(res) { return res.json(); }).then(function(result) {
+            if (!result.ok) {
+              statusEl.textContent = 'Error: ' + result.error;
+              statusEl.className = 'sig-status';
+            } else if (result.valid) {
+              statusEl.textContent = '\u2713 present and confirmed';
+              statusEl.className = 'sig-status sig-valid';
+            } else {
+              statusEl.textContent = '\u2717 invalid signature (wrong key or archive modified)';
+              statusEl.className = 'sig-status sig-invalid';
+            }
+          }).catch(function(err) {
+            statusEl.textContent = 'Request failed: ' + err;
+            statusEl.className = 'sig-status';
+          });
+        });
+      }
 
       function addFieldRow(key, val) {
         var row = document.createElement('div');
@@ -802,6 +1034,207 @@ PAGE_HTML = r"""<!DOCTYPE html>
   });
   document.getElementById('pathInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') doSearch();
+  });
+
+  // ── New Archive modal ────────────────────────────────────────────────────
+  var archiveOverlay = document.getElementById('newArchiveOverlay');
+  var archiveSelection = new Map(); // absolute path -> {type, name, size}
+  var archiveCurrentPath = null;
+
+  function joinPath(base, name) { return base.replace(/\/$/, '') + '/' + name; }
+
+  function openNewArchiveModal() {
+    archiveSelection.clear();
+    document.getElementById('archivePassword').value = '';
+    document.getElementById('archiveDest').value = '';
+    document.getElementById('archiveStatus').textContent = '';
+    var metaFieldsEl = document.getElementById('newArchiveMetaFields');
+    metaFieldsEl.innerHTML = '';
+    addArchiveMetaRow();
+    archiveOverlay.classList.add('open');
+
+    var startPath = document.getElementById('pathInput').value.trim() || null;
+    var url = '/api/browse' + (startPath ? ('?path=' + encodeURIComponent(startPath)) : '');
+    fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+      archiveCurrentPath = data.path;
+      renderArchiveBreadcrumb(data.path);
+      renderArchiveFileList(data);
+      renderSelectedSummary();
+      // Prefill with a sensible full path so a bare filename edit still
+      // lands somewhere the user can see, rather than relative to
+      // wherever the server process happens to be running from.
+      document.getElementById('archiveDest').value = joinPath(data.path, 'archive.onion');
+    }).catch(function(err) {
+      document.getElementById('archiveFileList').innerHTML =
+        '<div class="folder-empty">Could not read that folder: ' + escapeHtml(String(err)) + '</div>';
+    });
+  }
+  function closeNewArchiveModal() { archiveOverlay.classList.remove('open'); }
+
+  function loadArchiveFolder(path) {
+    var url = '/api/browse' + (path ? ('?path=' + encodeURIComponent(path)) : '');
+    fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+      archiveCurrentPath = data.path;
+      renderArchiveBreadcrumb(data.path);
+      renderArchiveFileList(data);
+    }).catch(function(err) {
+      document.getElementById('archiveFileList').innerHTML =
+        '<div class="folder-empty">Could not read that folder: ' + escapeHtml(String(err)) + '</div>';
+    });
+  }
+
+  function renderArchiveBreadcrumb(path) {
+    var el = document.getElementById('archiveBreadcrumb');
+    var parts = path.split('/').filter(Boolean);
+    var acc = '';
+    var html = '<span class="seg" data-path="/">/</span>';
+    parts.forEach(function(part) {
+      acc += '/' + part;
+      html += '<span class="sep">/</span><span class="seg" data-path="' + escapeHtml(acc) + '">' + escapeHtml(part) + '</span>';
+    });
+    el.innerHTML = html;
+    el.querySelectorAll('.seg').forEach(function(seg) {
+      seg.addEventListener('click', function() { loadArchiveFolder(seg.getAttribute('data-path')); });
+    });
+  }
+
+  function renderArchiveFileList(data) {
+    var el = document.getElementById('archiveFileList');
+    el.innerHTML = '';
+    if (data.parent) {
+      var up = document.createElement('div');
+      up.className = 'folder-row up';
+      up.innerHTML = '<span class="icon">&#8598;</span> .. (up one level)';
+      up.addEventListener('click', function() { loadArchiveFolder(data.parent); });
+      el.appendChild(up);
+    }
+    (data.dirs || []).forEach(function(name) {
+      var full = joinPath(data.path, name);
+      var row = document.createElement('div');
+      row.className = 'folder-row';
+      var checked = archiveSelection.has(full) ? 'checked' : '';
+      row.innerHTML =
+        '<span class="left"><input type="checkbox" ' + checked + '> <span class="icon">&#128193;</span> ' + escapeHtml(name) + '</span>' +
+        '<span class="nav-hint">open &rarr;</span>';
+      var cb = row.querySelector('input');
+      cb.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (cb.checked) archiveSelection.set(full, { type: 'dir', name: name });
+        else archiveSelection.delete(full);
+        renderSelectedSummary();
+      });
+      row.addEventListener('click', function(e) {
+        if (e.target === cb) return;
+        loadArchiveFolder(full);
+      });
+      el.appendChild(row);
+    });
+    (data.files || []).forEach(function(f) {
+      var full = joinPath(data.path, f.name);
+      var row = document.createElement('div');
+      row.className = 'folder-row';
+      var checked = archiveSelection.has(full) ? 'checked' : '';
+      row.innerHTML =
+        '<span class="left"><input type="checkbox" ' + checked + '> ' + escapeHtml(f.name) + '</span>' +
+        '<span class="file-size">' + f.size.toLocaleString() + ' B</span>';
+      var cb = row.querySelector('input');
+      cb.addEventListener('change', function() {
+        if (cb.checked) archiveSelection.set(full, { type: 'file', name: f.name, size: f.size });
+        else archiveSelection.delete(full);
+        renderSelectedSummary();
+      });
+      el.appendChild(row);
+    });
+    if ((!data.dirs || !data.dirs.length) && (!data.files || !data.files.length) && !data.parent) {
+      el.innerHTML += '<div class="folder-empty">Empty folder.</div>';
+    }
+  }
+
+  function renderSelectedSummary() {
+    var listEl = document.getElementById('selectedList');
+    var tagEl = document.querySelector('#selectedSummary .toc-tag');
+    tagEl.textContent = 'Selected (' + archiveSelection.size + ')';
+    listEl.innerHTML = '';
+    if (archiveSelection.size === 0) {
+      listEl.innerHTML = '<div class="selected-empty">Nothing selected yet -- check files or folders above.</div>';
+      return;
+    }
+    archiveSelection.forEach(function(info, path) {
+      var item = document.createElement('div');
+      item.className = 'selected-item';
+      var icon = info.type === 'dir' ? '&#128193;' : '&#128196;';
+      item.innerHTML = '<span>' + icon + ' ' + escapeHtml(path) + '</span><button type="button" aria-label="Remove">&times;</button>';
+      item.querySelector('button').addEventListener('click', function() {
+        archiveSelection.delete(path);
+        renderSelectedSummary();
+        // Refresh the current folder view too, in case the removed item
+        // is visible there, so its checkbox reflects the new state.
+        if (archiveCurrentPath) loadArchiveFolder(archiveCurrentPath);
+      });
+      listEl.appendChild(item);
+    });
+  }
+
+  function addArchiveMetaRow(key, val) {
+    var row = document.createElement('div');
+    row.className = 'meta-field-row';
+    row.innerHTML =
+      '<input type="text" class="meta-key" value="' + (key||'') + '" placeholder="field name">' +
+      '<input type="text" class="meta-val" value="' + (val||'') + '" placeholder="value (comma-separate for a list)">' +
+      '<button type="button" class="remove-field" aria-label="Remove field">&times;</button>';
+    row.querySelector('.remove-field').addEventListener('click', function() { row.remove(); });
+    document.getElementById('newArchiveMetaFields').appendChild(row);
+  }
+
+  document.getElementById('newArchiveBtn').addEventListener('click', openNewArchiveModal);
+  document.getElementById('newArchiveClose').addEventListener('click', closeNewArchiveModal);
+  document.getElementById('newArchiveCancel').addEventListener('click', closeNewArchiveModal);
+  document.getElementById('newArchiveAddField').addEventListener('click', function() { addArchiveMetaRow(); });
+  archiveOverlay.addEventListener('click', function(e) { if (e.target === archiveOverlay) closeNewArchiveModal(); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && archiveOverlay.classList.contains('open')) closeNewArchiveModal();
+  });
+
+  document.getElementById('newArchiveCreate').addEventListener('click', function() {
+    var statusEl = document.getElementById('archiveStatus');
+    var sources = Array.from(archiveSelection.keys());
+    if (sources.length === 0) {
+      statusEl.textContent = 'Select at least one file or folder first.';
+      return;
+    }
+    var dest = document.getElementById('archiveDest').value.trim();
+    if (!dest) {
+      statusEl.textContent = 'Enter a destination filename first.';
+      return;
+    }
+    var password = document.getElementById('archivePassword').value;
+    var meta = {};
+    document.querySelectorAll('#newArchiveMetaFields .meta-field-row').forEach(function(row) {
+      var k = row.querySelector('.meta-key').value.trim();
+      var v = row.querySelector('.meta-val').value.trim();
+      if (!k) return;
+      meta[k] = v.indexOf(',') !== -1 ? v.split(',').map(function(s) { return s.trim(); }) : v;
+    });
+
+    statusEl.textContent = 'Creating archive...';
+    fetch('/api/compress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sources: sources, dest: dest, password: password, meta: Object.keys(meta).length ? meta : null }),
+    }).then(function(res) { return res.json(); }).then(function(result) {
+      if (result.ok) {
+        statusEl.textContent = 'Created: ' + result.dest + ' (' + result.file_count + ' file(s))';
+        setTimeout(function() {
+          closeNewArchiveModal();
+          document.getElementById('pathInput').value = archiveCurrentPath || '';
+          doSearch();
+        }, 900);
+      } else {
+        statusEl.textContent = 'Error: ' + result.error;
+      }
+    }).catch(function(err) {
+      statusEl.textContent = 'Request failed: ' + err;
+    });
   });
 
   // Initial listing on load (no filters -- shows everything under the
