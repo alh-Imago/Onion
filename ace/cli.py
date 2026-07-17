@@ -125,15 +125,17 @@ def _compress(args):
 
     total_data = b"".join(d for _, d in files)
     print(f"\n[Phase 1 — Strategist]")
-    encrypt_only = getattr(args, 'encrypt_only', False)
-    no_compress  = getattr(args, 'no_compress', False)
+    encrypt_only  = getattr(args, 'encrypt_only', False)
+    no_compress   = getattr(args, 'no_compress', False)
+    split_huffman = getattr(args, 'split_huffman', False)
     if encrypt_only: args.encrypt = True
     if encrypt_only and not args.encrypt:
         args.encrypt = True
     iset = analyse(total_data, encrypt=args.encrypt,
                    fast=getattr(args,'fast',False),
                    encrypt_only=encrypt_only,
-                   no_compress=no_compress)
+                   no_compress=no_compress,
+                   split_huffman=split_huffman)
 
     print(f"\n[Phase 2 — Transformer]")
     compress_files(files, iset, dest,
@@ -484,6 +486,14 @@ def main():
                              "encryption (unlike --encrypt-only, does not require -e). The "
                              "header/TOC/META wrapper still applies, so the file stays fully "
                              "searchable via --search/-i even though it was never compressed.")
+    parser.add_argument("--split-huffman", dest="split_huffman", action="store_true",
+                        help="EXPERIMENTAL: use LZ77 with separate Huffman trees for literals "
+                             "vs match data, instead of the normal decision tree. Pure Python, "
+                             "meaningfully slower than the default (no C acceleration). NOT a "
+                             "universal win: genuinely smaller on random/incompressible and "
+                             "highly-repetitive data, genuinely LARGER on typical source code, "
+                             "small files, and general text. Never chosen automatically -- "
+                             "opt-in only. Try it and compare before relying on it.")
 
     args = parser.parse_args()
 

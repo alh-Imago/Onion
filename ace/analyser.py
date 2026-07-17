@@ -142,20 +142,31 @@ def delta_smoothness(data: bytes) -> tuple:
 # ── Main Strategist entry point ───────────────────────────────────────────────
 
 def analyse(data: bytes, encrypt: bool = False, fast: bool = False,
-            encrypt_only: bool = False, no_compress: bool = False) -> InstructionSet:
+            encrypt_only: bool = False, no_compress: bool = False,
+            split_huffman: bool = False) -> InstructionSet:
     """
     Analyse *data* and return an InstructionSet for the Transformer.
 
     Parameters
     ----------
-    data        : raw file bytes
-    encrypt     : whether to append an AES-256-GCM layer
-    no_compress : store the payload raw (RAW layer only), skipping every
-                  compression algorithm entirely. Independent of
-                  *encrypt* -- unlike encrypt_only, this does not require
-                  encryption. The point is the header/TOC/META wrapper
-                  (making the file fully searchable via --search/-i),
-                  not size reduction.
+    data          : raw file bytes
+    encrypt       : whether to append an AES-256-GCM layer
+    no_compress   : store the payload raw (RAW layer only), skipping every
+                    compression algorithm entirely. Independent of
+                    *encrypt* -- unlike encrypt_only, this does not require
+                    encryption. The point is the header/TOC/META wrapper
+                    (making the file fully searchable via --search/-i),
+                    not size reduction.
+    split_huffman : use the experimental LZ77+split-stream-Huffman
+                    algorithm instead of the normal decision tree. Pure
+                    Python, meaningfully slower than the C-accelerated
+                    default, and NOT a universal win -- measured
+                    genuinely smaller on random/incompressible and
+                    highly-repetitive data, genuinely LARGER on typical
+                    source code, small files, and general structured
+                    text (see ace/algorithms/split_huffman.py's
+                    docstring for the actual numbers this is based on).
+                    Never selected automatically; opt-in only, by design.
     """
     import binascii
 
@@ -170,6 +181,17 @@ def analyse(data: bytes, encrypt: bool = False, fast: bool = False,
     iset.entropy_score = entropy
 
     print(f"  [Strategist] Entropy score : {entropy:.3f} bits/byte")
+
+    # ── Step 0: explicit split-stream Huffman override (highest priority --
+    # user asked for this specific experimental algorithm, so use it
+    # regardless of what entropy/other heuristics would otherwise suggest) ──
+    if split_huffman:
+        print(f"  [Strategist] Split-stream Huffman mode (experimental, opt-in, pure Python)")
+        iset.add(AlgoID.LZ77_SPLIT)
+        if encrypt:
+            iset.add(AlgoID.AES256)
+            iset.encrypt = True
+        return iset
 
     if entropy > ENTROPY_INCOMPRESSIBLE:
         print(f"  [Strategist] File appears already compressed/encrypted → Raw only")

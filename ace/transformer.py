@@ -30,28 +30,31 @@ from .algorithms  import (
     delta_compress,   delta_decompress,
     lzma_compress,    lzma_decompress,
     lz4_compress,     lz4_decompress,
+    split_huffman_compress, split_huffman_decompress,
 )
 
 _COMPRESS = {
-    AlgoID.RAW:     lambda d, pw: raw_compress(d),
-    AlgoID.RLE:     lambda d, pw: rle_compress(d),
-    AlgoID.LZ77:    lambda d, pw: lz77_compress(d),
-    AlgoID.HUFFMAN: lambda d, pw: huffman_compress(d),
-    AlgoID.AES256:  lambda d, pw: aes256_compress(d, pw),
-    AlgoID.DELTA:   lambda d, pw: delta_compress(d),
-    AlgoID.LZMA:    lambda d, pw: lzma_compress(d),
-    AlgoID.LZ4:     lambda d, pw: lz4_compress(d),
+    AlgoID.RAW:        lambda d, pw: raw_compress(d),
+    AlgoID.RLE:        lambda d, pw: rle_compress(d),
+    AlgoID.LZ77:       lambda d, pw: lz77_compress(d),
+    AlgoID.HUFFMAN:    lambda d, pw: huffman_compress(d),
+    AlgoID.AES256:     lambda d, pw: aes256_compress(d, pw),
+    AlgoID.DELTA:      lambda d, pw: delta_compress(d),
+    AlgoID.LZMA:       lambda d, pw: lzma_compress(d),
+    AlgoID.LZ4:        lambda d, pw: lz4_compress(d),
+    AlgoID.LZ77_SPLIT: lambda d, pw: split_huffman_compress(d),
 }
 
 _DECOMPRESS = {
-    AlgoID.RAW:     lambda d, pw: raw_decompress(d),
-    AlgoID.RLE:     lambda d, pw: rle_decompress(d),
-    AlgoID.LZ77:    lambda d, pw: lz77_decompress(d),
-    AlgoID.HUFFMAN: lambda d, pw: huffman_decompress(d),
-    AlgoID.AES256:  lambda d, pw: aes256_decompress(d, pw),
-    AlgoID.DELTA:   lambda d, pw: delta_decompress(d),
-    AlgoID.LZMA:    lambda d, pw: lzma_decompress(d),
-    AlgoID.LZ4:     lambda d, pw: lz4_decompress(d),
+    AlgoID.RAW:        lambda d, pw: raw_decompress(d),
+    AlgoID.RLE:        lambda d, pw: rle_decompress(d),
+    AlgoID.LZ77:       lambda d, pw: lz77_decompress(d),
+    AlgoID.HUFFMAN:    lambda d, pw: huffman_decompress(d),
+    AlgoID.AES256:     lambda d, pw: aes256_decompress(d, pw),
+    AlgoID.DELTA:      lambda d, pw: delta_decompress(d),
+    AlgoID.LZMA:       lambda d, pw: lzma_decompress(d),
+    AlgoID.LZ4:        lambda d, pw: lz4_decompress(d),
+    AlgoID.LZ77_SPLIT: lambda d, pw: split_huffman_decompress(d),
 }
 
 

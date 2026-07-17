@@ -6,14 +6,15 @@ from typing import List
 
 
 class AlgoID:
-    RAW     = 0x00
-    RLE     = 0x01
-    LZ77    = 0x02
-    HUFFMAN = 0x03
-    AES256  = 0x04
-    DELTA   = 0x05
-    LZMA    = 0x06
-    LZ4     = 0x07
+    RAW        = 0x00
+    RLE        = 0x01
+    LZ77       = 0x02
+    HUFFMAN    = 0x03
+    AES256     = 0x04
+    DELTA      = 0x05
+    LZMA       = 0x06
+    LZ4        = 0x07
+    LZ77_SPLIT = 0x08
 
     _NAMES = {
         0x00: "Raw",
@@ -24,6 +25,7 @@ class AlgoID:
         0x05: "Delta",
         0x06: "LZMA",
         0x07: "LZ4",
+        0x08: "LZ77+SplitHuffman",
     }
 
     @classmethod

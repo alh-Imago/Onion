@@ -6,3 +6,4 @@ from .aes256  import compress as aes256_compress,  decompress as aes256_decompre
 from .delta   import compress as delta_compress,   decompress as delta_decompress
 from .lzma_layer import compress as lzma_compress, decompress as lzma_decompress
 from .lz4_layer import compress as lz4_compress, decompress as lz4_decompress
+from .split_huffman import compress as split_huffman_compress, decompress as split_huffman_decompress

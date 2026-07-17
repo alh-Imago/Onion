@@ -146,6 +146,7 @@ def _make_handler(default_paths):
                     password    = payload.get("password") or ""
                     meta_pairs  = payload.get("meta") or None
                     no_compress = bool(payload.get("no_compress"))
+                    split_huffman = bool(payload.get("split_huffman"))
 
                     if not sources:
                         raise ValueError("No files or folders selected.")
@@ -167,7 +168,7 @@ def _make_handler(default_paths):
                         raise ValueError("No files to compress (everything matched an ignore pattern).")
 
                     total_data = b"".join(d for _, d in files)
-                    iset = analyse(total_data, encrypt=bool(password), no_compress=no_compress)
+                    iset = analyse(total_data, encrypt=bool(password), no_compress=no_compress, split_huffman=split_huffman)
                     compress_files(files, iset, dest, password=password,
                                     audit=True, meta_pairs=meta_pairs, sign_key=None)
 
@@ -445,6 +446,12 @@ PAGE_HTML = r"""<!DOCTYPE html>
     width: 20px; height: 20px; flex: 0 0 auto; margin-top: 1px;
     accent-color: var(--accent); cursor: pointer; touch-action: manipulation;
   }
+  .time-warning {
+    display: none; margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+    background: var(--badge-bg); color: var(--badge-enc);
+    font-size: 0.76rem; line-height: 1.4;
+  }
+  .time-warning.show { display: block; }
   .modal-head {
     display: flex; justify-content: space-between; align-items: center;
     padding: 14px 16px; border-bottom: 1px solid var(--border);
@@ -760,6 +767,21 @@ PAGE_HTML = r"""<!DOCTYPE html>
           TOC block without running any compression algorithm. Useful for files that don't
           compress well, or when the point is search, not size.
         </label>
+      </div>
+
+      <div class="field-block checkbox-field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="archiveSplitHuffman">
+          Experimental: split-stream Huffman — separate Huffman trees for literal data vs
+          match data. Not a universal win: genuinely smaller on random/incompressible and
+          highly-repetitive data, genuinely <em>larger</em> on typical source code, small
+          files, and general text. Try it and compare.
+        </label>
+        <div class="time-warning" id="splitHuffmanWarning">
+          &#9888; Pure Python, no hardware acceleration — noticeably slower than the default,
+          especially on larger files. May take several seconds to tens of seconds depending on
+          size and content.
+        </div>
       </div>
 
       <label>Browse and check files/folders to include</label>
@@ -1203,6 +1225,8 @@ PAGE_HTML = r"""<!DOCTYPE html>
     archiveSelection.clear();
     document.getElementById('archivePassword').value = '';
     document.getElementById('archiveNoCompress').checked = false;
+    document.getElementById('archiveSplitHuffman').checked = false;
+    document.getElementById('splitHuffmanWarning').classList.remove('show');
     document.getElementById('archiveDest').value = '';
     document.getElementById('archiveStatus').textContent = '';
     var metaFieldsEl = document.getElementById('newArchiveMetaFields');
@@ -1347,6 +1371,9 @@ PAGE_HTML = r"""<!DOCTYPE html>
   document.getElementById('newArchiveClose').addEventListener('click', closeNewArchiveModal);
   document.getElementById('newArchiveCancel').addEventListener('click', closeNewArchiveModal);
   document.getElementById('newArchiveAddField').addEventListener('click', function() { addArchiveMetaRow(); });
+  document.getElementById('archiveSplitHuffman').addEventListener('change', function() {
+    document.getElementById('splitHuffmanWarning').classList.toggle('show', this.checked);
+  });
   archiveOverlay.addEventListener('click', function(e) { if (e.target === archiveOverlay) closeNewArchiveModal(); });
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && archiveOverlay.classList.contains('open')) closeNewArchiveModal();
@@ -1366,6 +1393,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     }
     var password = document.getElementById('archivePassword').value;
     var noCompress = document.getElementById('archiveNoCompress').checked;
+    var splitHuffman = document.getElementById('archiveSplitHuffman').checked;
     var meta = {};
     document.querySelectorAll('#newArchiveMetaFields .meta-field-row').forEach(function(row) {
       var k = row.querySelector('.meta-key').value.trim();
@@ -1378,7 +1406,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     fetch('/api/compress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sources: sources, dest: dest, password: password, meta: Object.keys(meta).length ? meta : null, no_compress: noCompress }),
+      body: JSON.stringify({ sources: sources, dest: dest, password: password, meta: Object.keys(meta).length ? meta : null, no_compress: noCompress, split_huffman: splitHuffman }),
     }).then(function(res) { return res.json(); }).then(function(result) {
       if (result.ok) {
         statusEl.textContent = 'Created: ' + result.dest + ' (' + result.file_count + ' file(s))';
