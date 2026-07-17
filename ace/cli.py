@@ -126,12 +126,14 @@ def _compress(args):
     total_data = b"".join(d for _, d in files)
     print(f"\n[Phase 1 — Strategist]")
     encrypt_only = getattr(args, 'encrypt_only', False)
+    no_compress  = getattr(args, 'no_compress', False)
     if encrypt_only: args.encrypt = True
     if encrypt_only and not args.encrypt:
         args.encrypt = True
     iset = analyse(total_data, encrypt=args.encrypt,
                    fast=getattr(args,'fast',False),
-                   encrypt_only=encrypt_only)
+                   encrypt_only=encrypt_only,
+                   no_compress=no_compress)
 
     print(f"\n[Phase 2 — Transformer]")
     compress_files(files, iset, dest,
@@ -421,6 +423,11 @@ def main():
                         help="fast mode: use LZ4 instead of LZ77+Huffman/LZMA (requires pip install lz4)")
     parser.add_argument("--encrypt-only", dest="encrypt_only", action="store_true",
                         help="skip compression entirely, encrypt only (implies -e)")
+    parser.add_argument("--no-compress", dest="no_compress", action="store_true",
+                        help="store payload raw, skip compression entirely -- independent of "
+                             "encryption (unlike --encrypt-only, does not require -e). The "
+                             "header/TOC/META wrapper still applies, so the file stays fully "
+                             "searchable via --search/-i even though it was never compressed.")
 
     args = parser.parse_args()
 

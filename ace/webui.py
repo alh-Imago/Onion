@@ -145,6 +145,7 @@ def _make_handler(default_paths):
                     dest        = payload.get("dest", "")
                     password    = payload.get("password") or ""
                     meta_pairs  = payload.get("meta") or None
+                    no_compress = bool(payload.get("no_compress"))
 
                     if not sources:
                         raise ValueError("No files or folders selected.")
@@ -166,7 +167,7 @@ def _make_handler(default_paths):
                         raise ValueError("No files to compress (everything matched an ignore pattern).")
 
                     total_data = b"".join(d for _, d in files)
-                    iset = analyse(total_data, encrypt=bool(password))
+                    iset = analyse(total_data, encrypt=bool(password), no_compress=no_compress)
                     compress_files(files, iset, dest, password=password,
                                     audit=True, meta_pairs=meta_pairs, sign_key=None)
 
@@ -382,6 +383,15 @@ PAGE_HTML = r"""<!DOCTYPE html>
     width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text);
     font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 16px;
+  }
+  .checkbox-field { display: flex; align-items: flex-start; }
+  .checkbox-label {
+    display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    font-size: 0.8rem; color: var(--muted); text-transform: none; letter-spacing: normal;
+  }
+  .checkbox-label input[type=checkbox] {
+    width: 20px; height: 20px; flex: 0 0 auto; margin-top: 1px;
+    accent-color: var(--accent); cursor: pointer; touch-action: manipulation;
   }
   .modal-head {
     display: flex; justify-content: space-between; align-items: center;
@@ -670,6 +680,15 @@ PAGE_HTML = r"""<!DOCTYPE html>
       <div class="field-block">
         <label for="archivePassword">Password (optional — leave blank for no encryption)</label>
         <input type="password" id="archivePassword" placeholder="Leave blank for no encryption">
+      </div>
+
+      <div class="field-block checkbox-field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="archiveNoCompress">
+          No compression (store raw) — keeps the file fully searchable via metadata and the
+          TOC block without running any compression algorithm. Useful for files that don't
+          compress well, or when the point is search, not size.
+        </label>
       </div>
 
       <label>Browse and check files/folders to include</label>
@@ -1046,6 +1065,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
   function openNewArchiveModal() {
     archiveSelection.clear();
     document.getElementById('archivePassword').value = '';
+    document.getElementById('archiveNoCompress').checked = false;
     document.getElementById('archiveDest').value = '';
     document.getElementById('archiveStatus').textContent = '';
     var metaFieldsEl = document.getElementById('newArchiveMetaFields');
@@ -1208,6 +1228,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
       return;
     }
     var password = document.getElementById('archivePassword').value;
+    var noCompress = document.getElementById('archiveNoCompress').checked;
     var meta = {};
     document.querySelectorAll('#newArchiveMetaFields .meta-field-row').forEach(function(row) {
       var k = row.querySelector('.meta-key').value.trim();
@@ -1220,7 +1241,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     fetch('/api/compress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sources: sources, dest: dest, password: password, meta: Object.keys(meta).length ? meta : null }),
+      body: JSON.stringify({ sources: sources, dest: dest, password: password, meta: Object.keys(meta).length ? meta : null, no_compress: noCompress }),
     }).then(function(res) { return res.json(); }).then(function(result) {
       if (result.ok) {
         statusEl.textContent = 'Created: ' + result.dest + ' (' + result.file_count + ' file(s))';

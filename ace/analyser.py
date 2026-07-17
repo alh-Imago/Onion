@@ -141,14 +141,21 @@ def delta_smoothness(data: bytes) -> tuple:
 
 # ── Main Strategist entry point ───────────────────────────────────────────────
 
-def analyse(data: bytes, encrypt: bool = False, fast: bool = False, encrypt_only: bool = False) -> InstructionSet:
+def analyse(data: bytes, encrypt: bool = False, fast: bool = False,
+            encrypt_only: bool = False, no_compress: bool = False) -> InstructionSet:
     """
     Analyse *data* and return an InstructionSet for the Transformer.
 
     Parameters
     ----------
-    data    : raw file bytes
-    encrypt : whether to append an AES-256-GCM layer
+    data        : raw file bytes
+    encrypt     : whether to append an AES-256-GCM layer
+    no_compress : store the payload raw (RAW layer only), skipping every
+                  compression algorithm entirely. Independent of
+                  *encrypt* -- unlike encrypt_only, this does not require
+                  encryption. The point is the header/TOC/META wrapper
+                  (making the file fully searchable via --search/-i),
+                  not size reduction.
     """
     import binascii
 
@@ -172,7 +179,22 @@ def analyse(data: bytes, encrypt: bool = False, fast: bool = False, encrypt_only
             iset.encrypt = True
         return iset
 
-    # ── Step 1a: encrypt-only (skip all compression) ────────────────────────
+    # ── Step 1a: store-only (skip all compression, encryption independent) ──
+    # Distinct from encrypt_only below: this doesn't require encrypt=True.
+    # Rationale: wrapping a file with the header/TOC/META blocks (RAW
+    # payload layer) makes it fully searchable via --search/-i without
+    # ever running a compression algorithm -- useful for files that
+    # don't compress well anyway, or when the point is metadata/search
+    # rather than size reduction.
+    if no_compress:
+        print(f"  [Strategist] Store-only mode: no compression (RAW layer only)")
+        iset.add(AlgoID.RAW)
+        if encrypt:
+            iset.add(AlgoID.AES256)
+            iset.encrypt = True
+        return iset
+
+    # ── Step 1b: encrypt-only (skip all compression) ────────────────────────
     if encrypt_only:
         if not encrypt:
             raise ValueError("encrypt_only=True requires encrypt=True")
