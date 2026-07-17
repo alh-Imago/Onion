@@ -110,6 +110,9 @@ onion --search ~/archives --meta tags=invoice
 
 # Point-and-click search/browse UI in your browser
 onion --web ~/archives
+
+# Or as a native desktop app (requires: pip install PyQt6)
+onion --qt ~/archives
 ```
 
 ---
@@ -591,6 +594,44 @@ onion --web ~/archives --port 8080
 
 ---
 
+### Desktop UI: `--qt`
+
+```bash
+pip install PyQt6      # or: pip install onion-compress[qt]
+onion --qt [path...]
+```
+
+A native desktop alternative to `--web`, matching it as closely as Qt's
+styling model allows (same colour palette, same feature set: search,
+browse, create archives, peel-open cards with TOC/signature/metadata,
+unwrap, delete). PyQt6 is an optional extra, not a hard dependency — the
+CLI, `--search`, and `--web` all work without it; `--qt` gives a clear
+install message if PyQt6 isn't present rather than a confusing traceback.
+
+Calls `ace.search`/`ace.transformer`/`ace.analyser` directly, in-process
+— there's no local server involved the way `--web` uses one, since a
+desktop app doesn't need an HTTP layer between itself and the same
+Python functions. Every disk-touching action (search, compress, unwrap,
+delete, verify) runs on a background thread so the window never freezes.
+
+Differences from the web UI, by necessity rather than choice:
+- File/folder selection for "+ New Archive" uses native OS file/folder
+  pickers (`QFileDialog`) rather than the web UI's custom breadcrumb
+  navigator — the idiomatic Qt approach, and it covers the same ground.
+- No touch-specific tuning (tap target sizing, iOS zoom fix, etc.) —
+  those were browser/mobile-specific concerns that don't apply to a
+  native desktop window.
+
+```bash
+# Launch, starting at a specific folder
+onion --qt ~/archives
+
+# Launch with no path -- starts at your home directory
+onion --qt
+```
+
+---
+
 ## Metadata reference
 
 The `--meta` flag accepts `key=value` pairs with automatic type inference:
@@ -709,6 +750,7 @@ onion/
     ├── toc.py            ← TOC block: directory listing, no decompression
     ├── search.py         ← Metadata/filename search across archives, no decompression
     ├── webui.py          ← Local web UI: search, browse, create, encrypt, verify
+    ├── qtui/             ← PyQt6 desktop UI (optional extra), same feature set
     ├── cli.py            ← Full CLI
     └── algorithms/
         ├── rle.py        ← Literal + repeated-run token encoding
@@ -818,10 +860,13 @@ and hours.
 - ~~Remove wrapper / delete actions in the web UI~~ ✓ done — `--unwrap`
   (restore original, delete archive, no data lost) and `--delete`
   (irreversible, confirmed) in both the CLI and web UI
-- Extract-without-removing in the web UI — `--unwrap` deletes the
-  archive as part of restoring the file; there's no web-UI equivalent of
-  plain `-d` (extract a *copy* while leaving the `.onion` in place),
-  still CLI-only for now
+- ~~Native desktop UI~~ ✓ done — `--qt`, PyQt6 (optional extra), matching
+  the web UI's feature set and palette as closely as Qt's styling model
+  allows; native file/folder pickers instead of a custom navigator
+- Extract-without-removing in the web UI *and* the Qt UI — `--unwrap`
+  deletes the archive as part of restoring the file; there's no
+  equivalent of plain `-d` (extract a *copy* while leaving the `.onion`
+  in place) in either frontend yet, still CLI-only for now
 
 ---
 
