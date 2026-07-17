@@ -7,6 +7,16 @@ Usage:
   onion -i <file.onion>               inspect archive
   onion --set-meta <file.onion> ...   update metadata without recompressing
   onion --verify <file.onion>         verify HMAC signature
+  onion --search <path> [...]         search .onion archives by metadata, no decompression
+
+Search options:
+  --meta key=value          require this metadata field to match (repeatable, AND)
+                            tags=x matches an archive tagged [x, ...]; tags=x,y
+                            requires both x and y present
+  --any <text>              case-insensitive substring match against filename
+                            and any metadata value (OR'd with --meta filters
+                            as an additional required condition)
+  --no-recursive            only scan the given path(s) themselves, not subdirs
 
 Compress options:
   -o <path>                 output path (default: <name>.onion)
@@ -287,6 +297,48 @@ def _verify(args):
         print(f"  Error: {e}\n", file=sys.stderr); sys.exit(1)
 
 
+def _search(args):
+    from .search import search
+
+    meta_filters = {}
+    for pair in args.meta:
+        if '=' not in pair:
+            print(f"Error: --meta value must be key=value, got: {pair!r}", file=sys.stderr)
+            sys.exit(1)
+        k, _, v = pair.partition('=')
+        meta_filters[k.strip()] = v.strip()
+
+    paths = args.search_paths
+    for p in paths:
+        if not os.path.exists(p):
+            print(f"Error: path not found: {p}", file=sys.stderr); sys.exit(1)
+
+    results = list(search(
+        paths,
+        meta_filters=meta_filters,
+        any_text=args.any_text,
+        recursive=not args.no_recursive,
+    ))
+
+    if not results:
+        print("\nNo matching archives found.\n")
+        return
+
+    print(f"\nOnion Search — {len(results)} match(es)")
+    print("─" * 60)
+    for r in results:
+        tags = r["meta"].get("tags")
+        desc = r["meta"].get("description", "")
+        enc  = " [encrypted]" if r["encrypted"] else ""
+        print(f"\n  {r['path']}{enc}")
+        print(f"    {r['original_size']:,} bytes original, {r['layer_count']} layer(s)")
+        if tags:
+            print(f"    tags: {', '.join(tags) if isinstance(tags, list) else tags}")
+        if desc:
+            print(f"    {desc}")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="onion",
@@ -305,6 +357,8 @@ def main():
                         help="update metadata block without recompressing")
     parser.add_argument("--verify",   dest="verify_file",   metavar="FILE",
                         help="verify HMAC-SHA256 signature")
+    parser.add_argument("--search", dest="search_paths", metavar="PATH", nargs="+",
+                        help="search .onion archives under PATH(s) by metadata")
 
     parser.add_argument("-o",  dest="output",   metavar="OUTPUT", help="output path")
     parser.add_argument("-e",  dest="encrypt",  action="store_true",
@@ -319,6 +373,10 @@ def main():
                         help="metadata key=value pair (repeatable)")
     parser.add_argument("--replace", dest="replace", action="store_true",
                         help="replace metadata instead of merging (set-meta only)")
+    parser.add_argument("--any", dest="any_text", metavar="TEXT",
+                        help="substring match against filename/metadata (search only)")
+    parser.add_argument("--no-recursive", dest="no_recursive", action="store_true",
+                        help="don't recurse into subdirectories (search only)")
 
     parser.add_argument("--exclude", dest="exclude", metavar="PATTERN",
                         action="append", default=[],
@@ -340,6 +398,7 @@ def main():
     elif args.inspect_file:    _inspect(args)
     elif args.set_meta_file:   _set_meta(args)
     elif args.verify_file:     _verify(args)
+    elif args.search_paths:    _search(args)
     else:
         parser.print_help(); sys.exit(1)
 
