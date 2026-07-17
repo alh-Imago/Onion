@@ -4,36 +4,60 @@ cli.py — Onion Compression Engine CLI
 Usage:
   onion -c <path> [options]           compress file(s) or directory
   onion -d <file.onion> [options]     decompress / extract
-  onion -i <file.onion>               inspect archive
+  onion -i <file.onion>               inspect archive (no decompression needed)
   onion --set-meta <file.onion> ...   update metadata without recompressing
   onion --verify <file.onion>         verify HMAC signature
+  onion --unwrap <file.onion>         restore original file(s), delete the archive
+  onion --delete <file.onion>         permanently delete the archive, no extraction
   onion --search <path> [...]         search .onion archives by metadata, no decompression
-  onion --web <path> [...]            launch local web UI for browsing/searching archives
+  onion --web <path> [...]            launch local web UI (browser, no install beyond stdlib)
+  onion --qt [path...]                launch native desktop UI (requires: pip install PyQt6)
 
 Search options:
   --meta key=value          require this metadata field to match (repeatable, AND)
                             tags=x matches an archive tagged [x, ...]; tags=x,y
                             requires both x and y present
   --any <text>              case-insensitive substring match against filename
-                            and any metadata value (OR'd with --meta filters
-                            as an additional required condition)
+                            (including inside directory archives via TOC) and
+                            any metadata value
   --no-recursive            only scan the given path(s) themselves, not subdirs
+
+Web/desktop UI options:
+  --port <n>                port for --web (default: 8000)
+  (--qt takes no extra options beyond the starting path(s))
 
 Compress options:
   -o <path>                 output path (default: <name>.onion)
   -e                        encrypt with AES-256-GCM
   -p <password>             password (else prompts)
   --exclude <pattern>       exclude glob pattern (repeatable)
-  --no-default-ignores      disable built-in ignore list
+  --no-default-ignores      disable built-in ignore list (e.g. *.onion, __pycache__/, .git/)
   --no-audit                omit audit block
   --meta key=value          add metadata (repeatable)
                             tags=a,b,c  →  list
                             age=42      →  integer
   --sign-key <key>          HMAC-sign the archive with this key
+  --fast                    use LZ4 instead of LZ77/LZMA (requires pip install lz4)
+  --encrypt-only            skip compression entirely, AES-256-GCM only (implies -e)
+  --no-compress             store payload raw, skip compression -- independent of
+                            encryption (unlike --encrypt-only). Header/TOC/META
+                            wrapper still applies, so it stays fully searchable.
+  --split-huffman           EXPERIMENTAL, opt-in only, never automatic. Separate
+                            Huffman trees for literals vs match data. Pure Python
+                            (slower). Genuinely mixed results -- smaller on
+                            random/repetitive data, larger on typical source code,
+                            small files, and general text. Try it and compare.
 
 Decompress options:
-  -o <path>                 output path (default: auto)
+  -o <path>                 output path (default: auto, stripping .onion)
   -p <password>             password for encrypted archives
+
+Unwrap options (restores original file(s), then deletes the archive):
+  -p <password>             password, if the archive is encrypted
+                            Refuses to overwrite an existing destination.
+
+Delete options (permanent, no extraction):
+  --yes                     skip the "type yes to confirm" prompt (for scripting)
 
 set-meta options:
   --meta key=value          metadata to set/merge (repeatable)
@@ -446,7 +470,7 @@ def _qt(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="onion",
-        description="Onion \U0001f9c5 — Adaptive Layered Compression Engine",
+        description="Onion \U0001f9c5 — Adaptive Layered Compression with a Searchable, Self-Describing Wrapper",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
