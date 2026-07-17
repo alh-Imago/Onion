@@ -9,6 +9,15 @@ filename — without ever decompressing a single one.
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/search_results.png" alt="Onion search results" width="480">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/card_expanded.png" alt="Onion archive card expanded, showing contents, signature, and metadata editor" width="480">
+</p>
+<p align="center"><em>The PyQt6 desktop UI (<code>onion --qt</code>) — the web UI (<code>onion --web</code>) looks the same, in a browser.</em></p>
+
+---
+
 ## The real strength: the wrapper
 
 Anyone can compress. `gzip`, `lz4`, `zstd` — compression is a solved,
