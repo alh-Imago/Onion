@@ -368,6 +368,14 @@ def verify(src_path: str, sign_key: str) -> bool:
             aj_len = struct.unpack_from(">H", archive, trail_offset + 4)[0]
             trail_offset += 4 + 2 + aj_len
 
+    # Skip past TOC block if present (directory archives) -- same fix
+    # already applied to set_meta() and _inspect(); missed here originally
+    # when the TOC block was added, which would have made --verify
+    # incorrectly report "no META block" (or verify against the wrong
+    # byte range) for any signed directory archive.
+    if is_toc(archive, trail_offset):
+        trail_offset += toc_block_size(archive, trail_offset)
+
     if not is_meta(archive, trail_offset):
         raise ValueError("Archive has no META block.")
 
