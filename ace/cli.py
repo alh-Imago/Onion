@@ -185,6 +185,7 @@ def _inspect(args):
     from .transformer import _DECOMPRESS
     from .manifest    import is_manifest, unpack as manifest_unpack
     from .meta        import unpack as meta_unpack, is_meta, block_size
+    from .toc         import unpack as toc_unpack, is_toc, block_size as toc_block_size
     import json, struct
 
     src = args.inspect_file
@@ -210,25 +211,7 @@ def _inspect(args):
         print(f"    Compressed size : {layer.compressed_size:,} bytes")
         print(f"    Checksum CRC32  : 0x{layer.checksum:08X}")
 
-    # File listing (unencrypted only)
-    if not iset.encrypt:
-        try:
-            payload = data[payload_offset: payload_offset + total_payload]
-            current = payload
-            for layer in reversed(iset.layers):
-                current = _DECOMPRESS[layer.algo_id](current, "")
-            if is_manifest(current):
-                files     = manifest_unpack(current)
-                total_raw = sum(len(d) for _, d in files)
-                print(f"\nContents ({len(files)} file(s), {total_raw:,} bytes uncompressed):")
-                for rel, fdata in files:
-                    print(f"  {len(fdata):>10,}  {rel}")
-        except Exception:
-            pass
-    else:
-        print(f"\n  (File listing not available for encrypted archives)")
-
-    # Trailing blocks
+    # Trailing blocks: AUDIT, then TOC, then META (in that order on disk)
     trail = payload_offset + total_payload
     if has_audit:
         audit_recipe = unpack_audit(data, trail)
@@ -237,6 +220,33 @@ def _inspect(args):
             trail += 4 + 2 + aj_len
             print(f"\nAudit Block:")
             print(json.dumps(audit_recipe, indent=2))
+
+    # Contents: fast path via TOC block (no decompression, any archive size).
+    # Falls back to full decompression only for older archives written
+    # before the TOC block existed.
+    toc_entries = toc_unpack(data, trail) if is_toc(data, trail) else None
+    if toc_entries is not None:
+        trail += toc_block_size(data, trail)
+        total_raw = sum(e["size"] for e in toc_entries)
+        print(f"\nContents ({len(toc_entries)} file(s), {total_raw:,} bytes uncompressed) [from TOC, no decompression]:")
+        for e in toc_entries:
+            print(f"  {e['size']:>10,}  {e['path']}")
+    elif not iset.encrypt:
+        try:
+            payload = data[payload_offset: payload_offset + total_payload]
+            current = payload
+            for layer in reversed(iset.layers):
+                current = _DECOMPRESS[layer.algo_id](current, "")
+            if is_manifest(current):
+                files     = manifest_unpack(current)
+                total_raw = sum(len(d) for _, d in files)
+                print(f"\nContents ({len(files)} file(s), {total_raw:,} bytes uncompressed) [decompressed, no TOC in this archive]:")
+                for rel, fdata in files:
+                    print(f"  {len(fdata):>10,}  {rel}")
+        except Exception:
+            pass
+    else:
+        print(f"\n  (File listing not available for encrypted archives without a TOC block)")
 
     if is_meta(data, trail):
         meta = meta_unpack(data, trail)
@@ -336,6 +346,11 @@ def _search(args):
             print(f"    tags: {', '.join(tags) if isinstance(tags, list) else tags}")
         if desc:
             print(f"    {desc}")
+        contents = r.get("contents")
+        if contents:
+            print(f"    contents ({len(contents)} file(s)):")
+            for entry in contents:
+                print(f"      {entry.get('size', 0):>10,}  {entry.get('path', '?')}")
     print()
 
 

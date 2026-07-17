@@ -3,17 +3,16 @@ search.py — Metadata search across .onion archives
 ─────────────────────────────────────────────────────
 Scans one or more paths for .onion files and matches them against metadata
 filters, WITHOUT decompressing any payload. This is the "wrapper" design
-principle in action: the header, audit block, and META block are all plain
-structural reads (fixed-size fields + short JSON blobs) — the compressed
-file contents are only ever touched if something later chooses to extract
-a match.
+principle in action: the header, audit block, TOC block, and META block
+are all plain structural reads (fixed-size fields + short JSON blobs) — the
+compressed file contents are only ever touched if something later chooses
+to extract a match.
 
-This module is deliberately payload-blind for v1: it can tell you a lot
-about an archive (size, encryption, layer recipe, all --meta fields, tags)
-without ever running a single decompression algorithm. Searching file
-NAMES inside a manifest (i.e. contents of a directory archive) would
-require decompressing the payload and is out of scope here — see the
-"future work" note at the bottom.
+As of the TOC block (ace/toc.py), this now covers directory contents too:
+file NAMES inside a directory archive are readable for free, on archives
+of any size, with zero decompression -- including on encrypted archives,
+since TOC sits outside the encrypted payload. Only actual file CONTENT
+search would require decompression, and remains out of scope here.
 """
 
 import os
@@ -22,6 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from .header import unpack_header, unpack_audit
 from .meta import unpack as meta_unpack, is_meta
+from .toc import unpack as toc_unpack, is_toc, block_size as toc_block_size
 
 
 def iter_onion_files(paths: List[str], recursive: bool = True) -> Iterator[str]:
@@ -72,6 +72,14 @@ def read_summary(path: str) -> Optional[Dict[str, Any]]:
             aj_len = struct.unpack_from(">H", data, trail + 4)[0]
             trail += 4 + 2 + aj_len
 
+    # TOC block: directory contents (path + size only), read without any
+    # decompression. Present even for encrypted archives, since it sits
+    # outside the encrypted payload entirely.
+    contents: Optional[List[Dict[str, Any]]] = None
+    if is_toc(data, trail):
+        contents = toc_unpack(data, trail)
+        trail += toc_block_size(data, trail)
+
     meta: Dict[str, Any] = {}
     if is_meta(data, trail):
         meta = meta_unpack(data, trail) or {}
@@ -83,6 +91,7 @@ def read_summary(path: str) -> Optional[Dict[str, Any]]:
         "encrypted": iset.encrypt,
         "layer_count": len(iset.layers),
         "audit": audit_recipe,
+        "contents": contents,
         "meta": meta,
     }
 
@@ -116,13 +125,19 @@ def matches_meta_filter(summary: Dict[str, Any], key: str, value: str) -> bool:
 
 def matches_any_text(summary: Dict[str, Any], text: str) -> bool:
     """True if *text* (case-insensitive substring) appears anywhere in the
-    archive's path or any metadata value."""
+    archive's path, any metadata value, or (if present) any file path
+    listed in the TOC block."""
     needle = text.strip().lower()
     if needle in os.path.basename(summary["path"]).lower():
         return True
     for v in summary.get("meta", {}).values():
         if needle in _stringify(v).lower():
             return True
+    contents = summary.get("contents")
+    if contents:
+        for entry in contents:
+            if needle in str(entry.get("path", "")).lower():
+                return True
     return False
 
 
@@ -150,8 +165,7 @@ def search(
         yield summary
 
 
-# Future work: an optional --deep flag that decompresses the manifest
-# layer only (not full content, just the file-list header from
-# manifest.py) to also search filenames *inside* directory archives.
-# Deliberately deferred -- payload-blind search is the smallest useful
-# first step and covers the common case (search by tags/description/etc).
+# Future work: actual file CONTENT search (not just names) would require
+# decompressing the payload and is deliberately out of scope here -- the
+# TOC block already covers the common "find archives containing a file
+# named X" case without any decompression cost.

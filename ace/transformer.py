@@ -17,6 +17,7 @@ from .instruction import AlgoID, InstructionSet, LayerDescriptor
 from .header      import pack_header, unpack_header, pack_audit, unpack_audit
 from .manifest    import pack as manifest_pack, unpack as manifest_unpack, \
                           is_manifest, extract as manifest_extract
+from .toc         import pack as toc_pack, is_toc, block_size as toc_block_size
 from .meta        import (pack as meta_pack, unpack as meta_unpack,
                           build as meta_build, verify_hmac,
                           block_size as meta_block_size, is_meta)
@@ -144,11 +145,13 @@ def _assemble(
     audit:       bool,
     meta_pairs:  Optional[Dict[str, Any]],
     sign_key:    Optional[str],
+    toc_entries: Optional[List[Tuple[str, bytes]]] = None,
 ) -> bytes:
     """Build the complete archive bytes from parts."""
     header      = pack_header(iset, include_audit=audit)
     audit_block = pack_audit(recipe) if audit else b""
-    core        = header + payload + audit_block
+    toc_block   = toc_pack(toc_entries) if toc_entries is not None else b""
+    core        = header + payload + audit_block + toc_block
 
     if meta_pairs is not None:
         meta_dict  = meta_build(meta_pairs, core, sign_key)
@@ -203,7 +206,7 @@ def compress_files(
     recipe["file_count"] = len(files)
     recipe["files"]      = [p for p, _ in files]
 
-    archive = _assemble(iset, payload, recipe, audit, meta_pairs, sign_key)
+    archive = _assemble(iset, payload, recipe, audit, meta_pairs, sign_key, toc_entries=files)
     _atomic_write(dest_path, archive)
 
     ratio = (1 - len(payload) / max(total_raw, 1)) * 100
@@ -321,6 +324,10 @@ def set_meta(
         if archive[trail_offset:trail_offset+4] == AUDIT_MAGIC:
             aj_len = struct.unpack_from(">H", archive, trail_offset + 4)[0]
             trail_offset += 4 + 2 + aj_len
+
+    # Skip past TOC block if present (directory archives)
+    if is_toc(archive, trail_offset):
+        trail_offset += toc_block_size(archive, trail_offset)
 
     # The "core" = everything before the META block
     if is_meta(archive, trail_offset):
