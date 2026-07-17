@@ -8,6 +8,7 @@ Usage:
   onion --set-meta <file.onion> ...   update metadata without recompressing
   onion --verify <file.onion>         verify HMAC signature
   onion --search <path> [...]         search .onion archives by metadata, no decompression
+  onion --web <path> [...]            launch local web UI for browsing/searching archives
 
 Search options:
   --meta key=value          require this metadata field to match (repeatable, AND)
@@ -354,6 +355,17 @@ def _search(args):
     print()
 
 
+def _web(args):
+    from .webui import run
+
+    paths = args.web_paths
+    for p in paths:
+        if not os.path.exists(p):
+            print(f"Error: path not found: {p}", file=sys.stderr); sys.exit(1)
+
+    run(paths, port=args.port)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="onion",
@@ -374,6 +386,10 @@ def main():
                         help="verify HMAC-SHA256 signature")
     parser.add_argument("--search", dest="search_paths", metavar="PATH", nargs="+",
                         help="search .onion archives under PATH(s) by metadata")
+    parser.add_argument("--web", dest="web_paths", metavar="PATH", nargs="+",
+                        help="launch local web UI for browsing/searching archives under PATH(s)")
+    parser.add_argument("--port", dest="port", type=int, default=8000,
+                        help="port for --web (default: 8000)")
 
     parser.add_argument("-o",  dest="output",   metavar="OUTPUT", help="output path")
     parser.add_argument("-e",  dest="encrypt",  action="store_true",
@@ -414,6 +430,7 @@ def main():
     elif args.set_meta_file:   _set_meta(args)
     elif args.verify_file:     _verify(args)
     elif args.search_paths:    _search(args)
+    elif args.web_paths:       _web(args)
     else:
         parser.print_help(); sys.exit(1)
 
