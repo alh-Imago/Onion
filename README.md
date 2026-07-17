@@ -1,5 +1,10 @@
 # Onion 🧅
-**Adaptive Layered Compression Engine**
+
+**Adaptive Layered Compression with a Searchable, Self-Describing Wrapper**
+
+Compress, encrypt, sign, and search thousands of archives by metadata or
+filename — without ever decompressing a single one.
+
 *v0.1.0 — A. Hill*
 
 ---
