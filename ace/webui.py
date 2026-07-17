@@ -81,6 +81,59 @@ def _make_handler(default_paths):
 
             self._send(404, b"Not found", "text/plain")
 
+        def do_POST(self):
+            parsed = urllib.parse.urlparse(self.path)
+
+            if parsed.path == "/api/set-meta":
+                from .transformer import set_meta
+                from .search import read_summary
+
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    path = payload.get("path", "")
+                    new_pairs = payload.get("meta", {})
+
+                    if not os.path.isfile(path) or not path.lower().endswith(".onion"):
+                        raise ValueError(f"Not a valid .onion archive path: {path!r}")
+                    if not isinstance(new_pairs, dict):
+                        raise ValueError("'meta' must be an object of key/value pairs")
+
+                    # Build the final metadata ourselves. AUTO_FIELDS
+                    # (provenance bookkeeping) are preserved from the
+                    # existing archive unless the client explicitly
+                    # overrides them; every OTHER existing field is fully
+                    # replaced by whatever the client sends -- this is
+                    # what makes field DELETION actually work: if the
+                    # user removed a row in the editor, that key is
+                    # simply absent from new_pairs, and (being a non-auto
+                    # field) it is correctly dropped rather than silently
+                    # surviving because it wasn't explicitly overridden.
+                    #
+                    # hmac_sha256 is deliberately excluded from both sides
+                    # entirely and never written back here: with merge=True
+                    # set_meta() would otherwise silently carry forward a
+                    # now-stale signature from before this edit, since this
+                    # endpoint never takes a signing key to recompute one.
+                    AUTO_FIELDS = {"created", "source_host"}
+                    existing = read_summary(path)
+                    existing_meta = dict(existing.get("meta", {})) if existing else {}
+                    existing_meta.pop("hmac_sha256", None)
+                    new_pairs.pop("hmac_sha256", None)
+
+                    final_meta = {k: v for k, v in existing_meta.items() if k in AUTO_FIELDS}
+                    final_meta.update(new_pairs)
+
+                    set_meta(path, final_meta, sign_key=None, merge=False)
+                    body = json.dumps({"ok": True}).encode("utf-8")
+                    self._send(200, body, "application/json")
+                except Exception as e:
+                    body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                    self._send(400, body, "application/json")
+                return
+
+            self._send(404, b"Not found", "text/plain")
+
     return Handler
 
 
@@ -339,6 +392,37 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .contents .toc-tag {
     font-size: 0.65rem; color: var(--muted); margin-bottom: 4px; display: block;
   }
+
+  .meta-editor {
+    margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+    display: none;
+  }
+  .archive.open .meta-editor { display: block; }
+  .meta-editor .toc-tag {
+    font-size: 0.65rem; color: var(--muted); margin-bottom: 6px; display: block;
+  }
+  .meta-fields { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .meta-field-row { display: flex; gap: 6px; }
+  .meta-field-row .meta-key {
+    flex: 0 0 30%; font-size: 0.8rem;
+  }
+  .meta-field-row .meta-val { flex: 1; font-size: 0.8rem; }
+  .meta-field-row input {
+    padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  .meta-field-row button.remove-field {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 0 10px; cursor: pointer;
+    min-width: 40px; min-height: 40px; font-size: 1rem;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  .meta-field-row button.remove-field:hover,
+  .meta-field-row button.remove-field:active { color: var(--badge-enc); border-color: var(--badge-enc); }
+  .meta-editor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .meta-save-status { font-size: 0.76rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
+  .meta-note { font-size: 0.68rem; color: var(--muted); margin-top: 8px; }
 
   .peel-hint { font-size: 0.7rem; color: var(--muted); margin-top: 8px; }
   .empty {
@@ -602,13 +686,84 @@ PAGE_HTML = r"""<!DOCTYPE html>
         contentsHtml = '<div class="contents"><span class="toc-tag">no TOC block in this archive (single-file or older archive)</span></div>';
       }
 
+      var AUTO_FIELDS = ['created', 'source_host', 'hmac_sha256'];
+      var editableEntries = Object.keys(meta)
+        .filter(function(k) { return AUTO_FIELDS.indexOf(k) === -1; })
+        .map(function(k) { return [k, Array.isArray(meta[k]) ? meta[k].join(', ') : String(meta[k])]; });
+
+      var metaRowsHtml = editableEntries.map(function(pair) {
+        return '<div class="meta-field-row">' +
+          '<input type="text" class="meta-key" value="' + escapeHtml(pair[0]) + '" placeholder="field name">' +
+          '<input type="text" class="meta-val" value="' + escapeHtml(pair[1]) + '" placeholder="value (comma-separate for a list)">' +
+          '<button type="button" class="remove-field" aria-label="Remove field">&times;</button>' +
+          '</div>';
+      }).join('');
+
+      var metaEditorHtml =
+        '<div class="meta-editor">' +
+          '<span class="toc-tag">metadata (created/source host preserved automatically, not shown here)</span>' +
+          '<div class="meta-fields">' + metaRowsHtml + '</div>' +
+          '<div class="meta-editor-row">' +
+            '<button type="button" class="ghost add-field">+ Add field</button>' +
+            '<button type="button" class="primary save-meta">Save changes</button>' +
+            '<span class="meta-save-status"></span>' +
+          '</div>' +
+          '<div class="meta-note">Removing a row and saving deletes that field. There is no undo -- re-add it manually if needed.</div>' +
+        '</div>';
+
       card.innerHTML =
         '<div class="head"><span class="path">' + escapeHtml(r.path) + '</span><span class="badges">' + encBadge + tagsHtml + '</span></div>' +
         '<div class="meta-line">' + r.original_size.toLocaleString() + ' bytes original &middot; ' + r.layer_count + ' layer(s)' +
         (r.contents ? ' &middot; ' + r.contents.length + ' file(s)' : '') + '</div>' +
         (meta.description ? '<div class="desc">' + escapeHtml(meta.description) + '</div>' : '') +
         contentsHtml +
-        '<div class="peel-hint">' + (r.contents && r.contents.length ? 'click to peel open &#8595;' : '') + '</div>';
+        metaEditorHtml +
+        '<div class="peel-hint">click to peel open &#8595;</div>';
+
+      var metaEditorEl = card.querySelector('.meta-editor');
+      metaEditorEl.addEventListener('click', function(e) { e.stopPropagation(); });
+      metaEditorEl.addEventListener('keydown', function(e) { e.stopPropagation(); });
+
+      function addFieldRow(key, val) {
+        var row = document.createElement('div');
+        row.className = 'meta-field-row';
+        row.innerHTML =
+          '<input type="text" class="meta-key" value="' + (key||'') + '" placeholder="field name">' +
+          '<input type="text" class="meta-val" value="' + (val||'') + '" placeholder="value (comma-separate for a list)">' +
+          '<button type="button" class="remove-field" aria-label="Remove field">&times;</button>';
+        row.querySelector('.remove-field').addEventListener('click', function() { row.remove(); });
+        metaEditorEl.querySelector('.meta-fields').appendChild(row);
+      }
+      metaEditorEl.querySelectorAll('.remove-field').forEach(function(btn) {
+        btn.addEventListener('click', function() { btn.closest('.meta-field-row').remove(); });
+      });
+      metaEditorEl.querySelector('.add-field').addEventListener('click', function() { addFieldRow(); });
+
+      metaEditorEl.querySelector('.save-meta').addEventListener('click', function() {
+        var statusEl = metaEditorEl.querySelector('.meta-save-status');
+        var newMeta = {};
+        metaEditorEl.querySelectorAll('.meta-field-row').forEach(function(row) {
+          var k = row.querySelector('.meta-key').value.trim();
+          var v = row.querySelector('.meta-val').value.trim();
+          if (!k) return;
+          newMeta[k] = v.indexOf(',') !== -1 ? v.split(',').map(function(s) { return s.trim(); }) : v;
+        });
+        statusEl.textContent = 'Saving...';
+        fetch('/api/set-meta', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: r.path, meta: newMeta }),
+        }).then(function(res) { return res.json(); }).then(function(result) {
+          if (result.ok) {
+            statusEl.textContent = 'Saved.';
+            doSearch();
+          } else {
+            statusEl.textContent = 'Error: ' + result.error;
+          }
+        }).catch(function(err) {
+          statusEl.textContent = 'Request failed: ' + err;
+        });
+      });
 
       card.addEventListener('click', function() { card.classList.toggle('open'); });
       card.addEventListener('keydown', function(e) {
