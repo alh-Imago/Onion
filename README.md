@@ -206,6 +206,7 @@ onion -c <file1> <file2> <dir1> ...
 | `--exclude <pattern>` | Exclude files matching glob pattern (repeatable) |
 | `--no-default-ignores` | Disable built-in ignore list |
 | `--no-audit` | Omit the audit block from the archive |
+| `--no-compress` | Store the payload raw, skip compression entirely — independent of encryption (unlike `--encrypt-only`, does not require `-e`). The header/TOC/META wrapper still applies, so the file stays fully searchable via `--search`/`-i` without ever being compressed. |
 
 **Examples:**
 
@@ -428,13 +429,29 @@ single-page search-and-browse UI at `http://127.0.0.1:<port>/`.
   type an exact path. Server-side by design: the server binds to
   `127.0.0.1` only, so this is no more permissive than `--search` already
   is on any path the server process can read.
+- **Create archives** — a "+ New Archive" button opens a file/folder
+  checkbox picker (selection persists as you navigate between folders,
+  matching what the CLI's mixed-path compress already supports), a
+  password field (blank = no encryption), a "No compression (store raw)"
+  checkbox for search-only wrapping without running any compression
+  algorithm, a destination field, and the same metadata editor used
+  elsewhere. Calls the same `analyse()` → `compress_files()` pipeline the
+  CLI uses, not a separate reimplementation of it.
+- **Encrypted archives** show a 🔒 lock icon in the results.
+- **Signature display** — an HMAC signature (if present) is shown
+  read-only (truncated hash, full value on hover) with a key field and
+  "Verify" button. Starts as "present, unverified"; updates to "present
+  and confirmed" or "invalid signature" after a real check against
+  `/api/verify`. No signing-key input for *creating* a signature exists
+  in the browser yet — that's still CLI-only (`--sign-key`), deliberately,
+  since typing a signing key into a web form casually felt like the
+  wrong default.
 - **Metadata editor** — peel a card open to edit, add, or delete
   metadata fields directly, no CLI round-trip needed. Deleting a field
   and saving really deletes it (not just an add/overwrite merge).
   `created`/`source_host` are preserved automatically; an existing HMAC
   signature is correctly dropped on edit rather than silently surviving
-  as a now-stale signature (this endpoint doesn't take a signing key —
-  re-sign via `--verify`/`--set-meta --sign-key` on the CLI if needed).
+  as a now-stale signature.
 - **Light/dark theme**, remembered across visits.
 - **Touch-aware** — proper tap target sizing, visible tap feedback
   (there's no `:hover` on a touchscreen), and the iOS Safari input-zoom
@@ -499,6 +516,7 @@ automatically, using the same glob syntax as `.gitignore`.
 |------|--------|
 | `--fast` | Use LZ4 instead of LZ77/LZMA — microsecond speed, slightly lower ratio. Requires `pip install lz4`. |
 | `--encrypt-only` | Skip compression entirely, AES-256-GCM only. Implies `-e`. For files already compressed, or when speed and confidentiality matter more than size. |
+| `--no-compress` | Skip compression entirely, **independent** of encryption — unlike `--encrypt-only`, doesn't require `-e`. The point is the header/TOC/META wrapper (searchable via `--search`/`-i`), not size reduction. Combine with `-e` if you also want encryption. |
 
 ```bash
 # Fast compress + encrypt (good for large already-structured files)
@@ -506,6 +524,12 @@ onion -c footage/ --fast -e
 
 # Encrypt only — no compression overhead
 onion -c classified.db --encrypt-only -p "secret"
+
+# Store raw, no encryption — just want it wrapped and searchable
+onion -c video_master.mov --no-compress --meta project="Q3 launch" --meta tags=video,final
+
+# Store raw AND encrypted
+onion -c classified_photos/ --no-compress -e -p "secret"
 
 # Normal (Strategist picks best algorithm automatically)
 onion -c report.pdf
@@ -556,7 +580,7 @@ onion/
     ├── meta.py           ← Metadata block: pack/unpack/sign/verify
     ├── toc.py            ← TOC block: directory listing, no decompression
     ├── search.py         ← Metadata/filename search across archives, no decompression
-    ├── webui.py          ← Local web UI: stdlib http.server, search + browse + edit
+    ├── webui.py          ← Local web UI: search, browse, create, encrypt, verify
     ├── cli.py            ← Full CLI
     └── algorithms/
         ├── rle.py        ← Literal + repeated-run token encoding
@@ -634,15 +658,27 @@ and hours.
   works even on encrypted archives since it sits outside the payload
 - ~~Local web UI~~ ✓ done — `--web`, point-and-click folder browser,
   light/dark theme, touch-aware, inline metadata editor
+- ~~Store-only / no-compress mode~~ ✓ done — `--no-compress` (CLI and web
+  UI), independent of encryption unlike `--encrypt-only`. Extends
+  `--search`'s reach to files that were never compressed: the header/
+  TOC/META wrapper still applies regardless of whether any compression
+  algorithm ran
+- ~~Wire archive creation into the web UI~~ ✓ done — "+ New Archive":
+  file/folder checkbox picker, optional password, optional no-compress,
+  metadata, all via the same `analyse()`/`compress_files()` pipeline the
+  CLI uses
+- ~~Signature verification from the web UI~~ ✓ done — read-only hash
+  display + a "Verify" action against a real signing key
 - Actual file **content** search (not just names/metadata) — would
   require decompressing the payload; deliberately out of scope so far,
   since the TOC/metadata search already covers the common case
-- Re-signing (HMAC) from the web UI — editing metadata there currently
-  drops a stale signature correctly but can't create a new one, since
-  that would mean typing a signing key into a browser form; still a
-  CLI-only operation (`--set-meta --sign-key`) for now
-- Wire compress/decompress/encrypt actions into the web UI — currently
-  read/search/edit-metadata only, not archive creation
+- Re-signing (HMAC) from the web UI, or signing at creation time there —
+  editing metadata there currently drops a stale signature correctly but
+  can't create a new one, since that would mean typing a signing key
+  into a browser form for archive creation too; still a CLI-only
+  operation (`--sign-key`) for now
+- Decompress/extract actions in the web UI — currently create, search,
+  browse, edit-metadata, and verify, but not extraction back to files
 
 ---
 
