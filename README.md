@@ -94,6 +94,9 @@ onion -c my_project/
 # Decompress
 onion -d my_project.onion
 
+# Remove the wrapper -- restores the original, deletes the .onion
+onion --unwrap my_project.onion
+
 # Inspect without extracting
 onion -i my_project.onion
 
@@ -367,6 +370,49 @@ onion --verify footage.onion -p "secret" && echo "OK" || echo "TAMPERED"
 
 ---
 
+### Remove wrapper: `--unwrap`
+
+```bash
+onion --unwrap <file.onion> [-p <password>]
+```
+
+Restores the original file(s) exactly, then **deletes the .onion archive**.
+Distinct from `--delete` below: no data is lost — this undoes the
+wrapper, giving you your original file(s) back, rather than throwing
+anything away. If the archive is encrypted, the password is required
+(prompts if not given via `-p`). Refuses to overwrite an existing
+file/directory at the destination rather than silently clobbering it.
+
+```bash
+# Unwrap a single file — restores report.pdf, deletes report.pdf.onion
+onion --unwrap report.pdf.onion
+
+# Unwrap an encrypted directory archive
+onion --unwrap project.onion -p "secret"
+```
+
+---
+
+### Delete an archive: `--delete`
+
+```bash
+onion --delete <file.onion> [--yes]
+```
+
+Permanently deletes the `.onion` archive with **no extraction** —
+irreversible. Prompts for confirmation (`Type 'yes' to confirm:`) unless
+`--yes` is given, for scripting.
+
+```bash
+# Interactive (asks for confirmation)
+onion --delete old_backup.onion
+
+# Scripted — skip the confirmation prompt
+onion --delete old_backup.onion --yes
+```
+
+---
+
 ### Search archives: `--search`
 
 ```bash
@@ -452,6 +498,14 @@ single-page search-and-browse UI at `http://127.0.0.1:<port>/`.
   `created`/`source_host` are preserved automatically; an existing HMAC
   signature is correctly dropped on edit rather than silently surviving
   as a now-stale signature.
+- **Remove wrapper / Delete** — two distinct, clearly separate buttons
+  per card. "Remove wrapper" restores the original file(s) and deletes
+  the archive (no data lost — undoes the wrapper). "Delete archive"
+  permanently removes the `.onion` with no extraction; requires a
+  real two-step confirmation in the page itself (button becomes "Really
+  delete? Click again" for 6 seconds, not a single click and not just
+  the browser's native confirm dialog), and the API independently
+  requires an explicit confirmation flag too.
 - **Light/dark theme**, remembered across visits.
 - **Touch-aware** — proper tap target sizing, visible tap feedback
   (there's no `:hover` on a touchscreen), and the iOS Safari input-zoom
@@ -677,8 +731,13 @@ and hours.
   can't create a new one, since that would mean typing a signing key
   into a browser form for archive creation too; still a CLI-only
   operation (`--sign-key`) for now
-- Decompress/extract actions in the web UI — currently create, search,
-  browse, edit-metadata, and verify, but not extraction back to files
+- ~~Remove wrapper / delete actions in the web UI~~ ✓ done — `--unwrap`
+  (restore original, delete archive, no data lost) and `--delete`
+  (irreversible, confirmed) in both the CLI and web UI
+- Extract-without-removing in the web UI — `--unwrap` deletes the
+  archive as part of restoring the file; there's no web-UI equivalent of
+  plain `-d` (extract a *copy* while leaving the `.onion` in place),
+  still CLI-only for now
 
 ---
 
