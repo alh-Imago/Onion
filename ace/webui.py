@@ -193,8 +193,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
     padding: 7px 14px; font-size: 0.85rem; cursor: pointer;
     font-family: inherit;
     display: flex; align-items: center; gap: 6px;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   button.theme-toggle:hover { border-color: var(--accent); }
+  button.theme-toggle:active { background: var(--bg); }
   button.theme-toggle:focus-visible, a:focus-visible, input:focus-visible,
   .archive:focus-visible, button:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px;
@@ -212,9 +214,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
     color: var(--muted); display: block; margin-bottom: 4px;
   }
   input[type=text] {
-    width: 100%; padding: 8px 10px; border-radius: 6px;
+    width: 100%; padding: 10px 10px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
-    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.85rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 16px;
+    touch-action: manipulation;
   }
   .field { flex: 1; min-width: 160px; }
   .path-row { display: flex; gap: 8px; }
@@ -238,22 +241,33 @@ PAGE_HTML = r"""<!DOCTYPE html>
     padding: 14px 16px; border-bottom: 1px solid var(--border);
     font-weight: 600; font-size: 0.95rem;
   }
-  .modal-head button { border: none; background: none; font-size: 1.1rem; color: var(--muted); cursor: pointer; }
+  .modal-head button {
+    border: none; background: none; font-size: 1.3rem; color: var(--muted); cursor: pointer;
+    min-width: 40px; min-height: 40px; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
   .modal-head button:hover { color: var(--badge-enc); }
+  .modal-head button:active { color: var(--badge-enc); }
   .breadcrumb {
     padding: 10px 16px; font-family: "IBM Plex Mono", monospace; font-size: 0.76rem;
     color: var(--muted); border-bottom: 1px solid var(--border);
     white-space: nowrap; overflow-x: auto;
   }
-  .breadcrumb .seg { cursor: pointer; }
+  .breadcrumb .seg {
+    cursor: pointer; padding: 6px 3px; display: inline-block;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
   .breadcrumb .seg:hover { color: var(--accent); text-decoration: underline; }
-  .breadcrumb .sep { margin: 0 4px; color: var(--border); }
-  .folder-list { overflow-y: auto; padding: 6px 0; flex: 1; }
+  .breadcrumb .seg:active { color: var(--accent); }
+  .breadcrumb .sep { margin: 0 2px; color: var(--border); }
+  .folder-list { overflow-y: auto; padding: 6px 0; flex: 1; -webkit-overflow-scrolling: touch; }
   .folder-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 16px; font-size: 0.86rem; cursor: pointer;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; font-size: 0.9rem; cursor: pointer;
+    min-height: 44px;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   .folder-row:hover { background: var(--bg); }
+  .folder-row:active { background: var(--bg); }
   .folder-row .icon { color: var(--accent); }
   .folder-row.up { color: var(--muted); font-style: italic; }
   .folder-empty { padding: 20px 16px; color: var(--muted); font-size: 0.82rem; text-align: center; }
@@ -261,24 +275,30 @@ PAGE_HTML = r"""<!DOCTYPE html>
     display: flex; justify-content: flex-end; gap: 8px;
     padding: 12px 16px; border-top: 1px solid var(--border);
   }
-  .filters-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-  .filter-row { display: flex; gap: 6px; }
+  .filters-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+  .filter-row { display: flex; gap: 8px; }
   .filter-row input { flex: 1; }
   .filter-row button.remove {
     background: none; border: 1px solid var(--border); color: var(--muted);
     border-radius: 6px; padding: 0 10px; cursor: pointer;
+    min-width: 40px; min-height: 40px; font-size: 1rem;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   .filter-row button.remove:hover { color: var(--badge-enc); border-color: var(--badge-enc); }
+  .filter-row button.remove:active { background: var(--bg); }
 
   .actions { display: flex; gap: 8px; margin-top: 12px; }
   button.primary, button.ghost {
     font-family: inherit; font-size: 0.85rem; font-weight: 500;
     padding: 9px 16px; border-radius: 7px; cursor: pointer; border: 1px solid transparent;
+    min-height: 40px; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   button.primary { background: var(--accent); color: #fff; }
   button.primary:hover { background: var(--accent-2); }
+  button.primary:active { background: var(--accent-2); transform: scale(0.98); }
   button.ghost { background: transparent; border-color: var(--border); color: var(--text); }
   button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.ghost:active { background: var(--bg); }
 
   .status { font-size: 0.8rem; color: var(--muted); margin: 4px 2px 16px; font-family: "IBM Plex Mono", monospace; }
 
@@ -287,7 +307,9 @@ PAGE_HTML = r"""<!DOCTYPE html>
     border-left: 4px solid var(--accent);
     border-radius: 8px; padding: 14px 16px; margin-bottom: 10px;
     box-shadow: var(--shadow); cursor: pointer;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
+  .archive:active { background: var(--bg); }
   .archive .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
   .archive .path {
     font-family: "IBM Plex Mono", monospace; font-size: 0.92rem; font-weight: 500;
@@ -327,6 +349,24 @@ PAGE_HTML = r"""<!DOCTYPE html>
 
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
+  }
+
+  /* Touch/coarse-pointer devices (finger, not mouse/trackpad) get a bit
+     more breathing room around tap targets -- detected via input
+     precision, not screen size, since a touch laptop can have a large
+     screen and a mouse-driven small window shouldn't get finger-sized
+     controls it doesn't need. */
+  @media (pointer: coarse) {
+    .archive { padding: 16px 18px; }
+    .filter-row { gap: 10px; }
+    .actions { gap: 10px; }
+    button.primary, button.ghost { padding: 11px 18px; }
+    .folder-row { padding: 14px 16px; }
+  }
+
+  @media (max-width: 480px) {
+    .path-row { flex-direction: column; }
+    .path-row button { width: 100%; }
   }
 </style>
 </head>
