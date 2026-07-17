@@ -96,6 +96,12 @@ onion -d my_project.onion
 
 # Inspect without extracting
 onion -i my_project.onion
+
+# Search a folder of archives by metadata — no decompression
+onion --search ~/archives --meta tags=invoice
+
+# Point-and-click search/browse UI in your browser
+onion --web ~/archives
 ```
 
 ---
@@ -162,6 +168,19 @@ An optional trailing block carrying arbitrary key-value metadata:
 - User-supplied: any key=value pairs via `--meta`
 - HMAC-SHA256 signing: signs everything before the META block
 - Post-hoc editable: update metadata without recompressing the payload
+
+### The TOC Block
+An optional trailing block listing a directory archive's contents —
+just `{path, size}` per file, written between the Audit block and the
+Metadata block. Lets a directory archive's file list be read instantly
+on archives of any size, with zero decompression, the same design
+principle as the Metadata block applied to directory contents instead
+of user tags. Present even on **encrypted** archives, since it sits
+outside the encrypted payload entirely — `-i` and `--search` can show
+you what's inside an encrypted archive without the password. Only
+written for multi-file/directory archives; a plain single-file compress
+has no TOC block (there's only one file, and its name isn't part of the
+archive format in that mode).
 
 ---
 
@@ -347,6 +366,90 @@ onion --verify footage.onion -p "secret" && echo "OK" || echo "TAMPERED"
 
 ---
 
+### Search archives: `--search`
+
+```bash
+onion --search <path> [path...] [--meta key=value]... [--any text] [--no-recursive]
+```
+
+Scans one or more paths for `.onion` files and filters them by metadata —
+**without decompressing anything**. Reads only the header, Audit block,
+TOC block, and Metadata block for each archive: a header parse, a couple
+of short JSON blobs, done. Cost scales with the number of archives, not
+their total compressed size.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--meta key=value` | Require this field to match (repeatable, AND semantics). `tags=x` matches an archive tagged `[x, ...]`; `tags=x,y` requires both present |
+| `--any <text>` | Case-insensitive substring match against filename, any metadata value, **and** any filename inside a directory archive's TOC block |
+| `--no-recursive` | Only scan the given path(s) themselves, not subdirectories |
+
+**Examples:**
+
+```bash
+# Everything tagged "invoice"
+onion --search ~/archives --meta tags=invoice
+
+# Both tags required
+onion --search ~/archives --meta tags=invoice,q3
+
+# Freetext across metadata AND filenames inside directory archives
+onion --search ~/archives --any main.py
+
+# No filters at all — list everything found
+onion --search ~/archives
+```
+
+Payload-blind by design: finding archives by tag, description, or a
+filename inside a directory archive never triggers a single decompression
+call. Searching actual file *content* (not just names) would require
+decompressing the payload and is out of scope here.
+
+---
+
+### Web UI: `--web`
+
+```bash
+onion --web <path> [path...] [--port 8000]
+```
+
+Launches a local, dependency-free web server (Python's stdlib
+`http.server` — no Flask/FastAPI, nothing to `pip install`) serving a
+single-page search-and-browse UI at `http://127.0.0.1:<port>/`.
+
+- **Search & browse** — the same metadata/freetext filtering as
+  `--search`, with results shown as cards you click to "peel open" and
+  reveal a directory archive's contents (from the TOC block, no
+  decompression).
+- **Folder picker** — a "Browse…" button opens a point-and-click folder
+  navigator (breadcrumb + subfolder list) instead of requiring you to
+  type an exact path. Server-side by design: the server binds to
+  `127.0.0.1` only, so this is no more permissive than `--search` already
+  is on any path the server process can read.
+- **Metadata editor** — peel a card open to edit, add, or delete
+  metadata fields directly, no CLI round-trip needed. Deleting a field
+  and saving really deletes it (not just an add/overwrite merge).
+  `created`/`source_host` are preserved automatically; an existing HMAC
+  signature is correctly dropped on edit rather than silently surviving
+  as a now-stale signature (this endpoint doesn't take a signing key —
+  re-sign via `--verify`/`--set-meta --sign-key` on the CLI if needed).
+- **Light/dark theme**, remembered across visits.
+- **Touch-aware** — proper tap target sizing, visible tap feedback
+  (there's no `:hover` on a touchscreen), and the iOS Safari input-zoom
+  fix, for use on a tablet or touchscreen PC as well as a mouse/keyboard.
+
+```bash
+# Browse and search everything under ~/archives
+onion --web ~/archives
+
+# Custom port
+onion --web ~/archives --port 8080
+```
+
+---
+
 ## Metadata reference
 
 The `--meta` flag accepts `key=value` pairs with automatic type inference:
@@ -451,6 +554,9 @@ onion/
     ├── manifest.py       ← Multi-file bundler / extractor
     ├── ignore.py         ← .onionignore and --exclude glob matching
     ├── meta.py           ← Metadata block: pack/unpack/sign/verify
+    ├── toc.py            ← TOC block: directory listing, no decompression
+    ├── search.py         ← Metadata/filename search across archives, no decompression
+    ├── webui.py          ← Local web UI: stdlib http.server, search + browse + edit
     ├── cli.py            ← Full CLI
     └── algorithms/
         ├── rle.py        ← Literal + repeated-run token encoding
@@ -522,7 +628,23 @@ and hours.
 - Split-stream Huffman — separate Huffman trees for literals vs
   back-reference lengths/offsets (same idea as deflate). Would close
   most of the remaining ratio gap with gzip without changing LZ77.
+- ~~Metadata search across archives~~ ✓ done — `--search`, payload-blind,
+  matches on `--meta` fields and freetext (including filenames via TOC)
+- ~~Directory contents without decompression~~ ✓ done — TOC block,
+  works even on encrypted archives since it sits outside the payload
+- ~~Local web UI~~ ✓ done — `--web`, point-and-click folder browser,
+  light/dark theme, touch-aware, inline metadata editor
+- Actual file **content** search (not just names/metadata) — would
+  require decompressing the payload; deliberately out of scope so far,
+  since the TOC/metadata search already covers the common case
+- Re-signing (HMAC) from the web UI — editing metadata there currently
+  drops a stale signature correctly but can't create a new one, since
+  that would mean typing a signing key into a browser form; still a
+  CLI-only operation (`--set-meta --sign-key`) for now
+- Wire compress/decompress/encrypt actions into the web UI — currently
+  read/search/edit-metadata only, not archive creation
 
 ---
 
-*Built in an afternoon. A. Hill, June 2026.*
+*Built in an afternoon. A. Hill, June 2026. Search, TOC, and the web UI
+added July 2026.*
