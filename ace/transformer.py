@@ -344,6 +344,41 @@ def unwrap(src_path: str, password: str = "") -> List[str]:
 
 # ── Public: post-hoc metadata edit ───────────────────────────────────────────
 
+def save_metadata_replacing_editable_fields(src_path: str, new_pairs: Dict[str, Any]) -> None:
+    """
+    Shared logic behind both frontends' "edit metadata" action (originally
+    written for webui.py's /api/set-meta, extracted here so the Qt UI uses
+    the exact same, already-verified logic rather than a second copy that
+    could drift out of sync with a future fix).
+
+    AUTO_FIELDS (created, source_host) are preserved from the existing
+    archive unless *new_pairs* explicitly overrides them. Every OTHER
+    existing field is fully replaced by whatever *new_pairs* contains --
+    this is what makes field DELETION actually work: omit a key from
+    new_pairs and it's genuinely dropped, not silently kept because it
+    wasn't overwritten (which merge=True alone would do).
+
+    hmac_sha256 is deliberately excluded from both sides and never
+    written back: carrying an old signature forward here would make a
+    now-stale signature (computed before this edit) look "present" when
+    it no longer matches the content. Re-signing needs an explicit
+    signing key and stays a separate, deliberate action (--sign-key).
+    """
+    from .search import read_summary
+
+    AUTO_FIELDS = {"created", "source_host"}
+    existing = read_summary(src_path)
+    existing_meta = dict(existing.get("meta", {})) if existing else {}
+    existing_meta.pop("hmac_sha256", None)
+    new_pairs = dict(new_pairs)
+    new_pairs.pop("hmac_sha256", None)
+
+    final_meta = {k: v for k, v in existing_meta.items() if k in AUTO_FIELDS}
+    final_meta.update(new_pairs)
+
+    set_meta(src_path, final_meta, sign_key=None, merge=False)
+
+
 def set_meta(
     src_path:   str,
     new_pairs:  Dict[str, Any],

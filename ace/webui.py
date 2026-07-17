@@ -85,8 +85,7 @@ def _make_handler(default_paths):
             parsed = urllib.parse.urlparse(self.path)
 
             if parsed.path == "/api/set-meta":
-                from .transformer import set_meta
-                from .search import read_summary
+                from .transformer import save_metadata_replacing_editable_fields
 
                 length = int(self.headers.get("Content-Length", 0))
                 try:
@@ -99,32 +98,7 @@ def _make_handler(default_paths):
                     if not isinstance(new_pairs, dict):
                         raise ValueError("'meta' must be an object of key/value pairs")
 
-                    # Build the final metadata ourselves. AUTO_FIELDS
-                    # (provenance bookkeeping) are preserved from the
-                    # existing archive unless the client explicitly
-                    # overrides them; every OTHER existing field is fully
-                    # replaced by whatever the client sends -- this is
-                    # what makes field DELETION actually work: if the
-                    # user removed a row in the editor, that key is
-                    # simply absent from new_pairs, and (being a non-auto
-                    # field) it is correctly dropped rather than silently
-                    # surviving because it wasn't explicitly overridden.
-                    #
-                    # hmac_sha256 is deliberately excluded from both sides
-                    # entirely and never written back here: with merge=True
-                    # set_meta() would otherwise silently carry forward a
-                    # now-stale signature from before this edit, since this
-                    # endpoint never takes a signing key to recompute one.
-                    AUTO_FIELDS = {"created", "source_host"}
-                    existing = read_summary(path)
-                    existing_meta = dict(existing.get("meta", {})) if existing else {}
-                    existing_meta.pop("hmac_sha256", None)
-                    new_pairs.pop("hmac_sha256", None)
-
-                    final_meta = {k: v for k, v in existing_meta.items() if k in AUTO_FIELDS}
-                    final_meta.update(new_pairs)
-
-                    set_meta(path, final_meta, sign_key=None, merge=False)
+                    save_metadata_replacing_editable_fields(path, new_pairs)
                     body = json.dumps({"ok": True}).encode("utf-8")
                     self._send(200, body, "application/json")
                 except Exception as e:

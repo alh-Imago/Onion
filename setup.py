@@ -33,6 +33,9 @@ setup(
     install_requires=[
         "cryptography>=41.0",
     ],
+    extras_require={
+        "qt": ["PyQt6>=6.4"],
+    },
     entry_points={
         "console_scripts": [
             "onion=ace.cli:main",

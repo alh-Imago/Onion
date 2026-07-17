@@ -418,6 +418,31 @@ def _web(args):
     run(paths, port=args.port)
 
 
+def _qt(args):
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except ImportError:
+        print("Error: PyQt6 is not installed. Install it with: pip install PyQt6",
+              file=sys.stderr)
+        sys.exit(1)
+
+    from .qtui.main_window import MainWindow
+    from .qtui import theme as theme_mod
+
+    paths = args.qt_paths or [os.path.expanduser("~")]
+    for p in paths:
+        if not os.path.exists(p):
+            print(f"Error: path not found: {p}", file=sys.stderr); sys.exit(1)
+
+    app = QApplication(sys.argv[:1])
+    theme_mod.apply_theme(app, dark=False)
+    window = MainWindow(default_paths=paths)
+    window.show()
+    from PyQt6.QtCore import QThreadPool
+    app.aboutToQuit.connect(lambda: QThreadPool.globalInstance().waitForDone(3000))
+    sys.exit(app.exec())
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="onion",
@@ -450,6 +475,9 @@ def main():
                         help="launch local web UI for browsing/searching archives under PATH(s)")
     parser.add_argument("--port", dest="port", type=int, default=8000,
                         help="port for --web (default: 8000)")
+    parser.add_argument("--qt", dest="qt_paths", metavar="PATH", nargs="*",
+                        help="launch the PyQt6 desktop UI for browsing/searching archives, "
+                             "optionally starting at PATH(s). Requires PyQt6 (pip install PyQt6).")
 
     parser.add_argument("-o",  dest="output",   metavar="OUTPUT", help="output path")
     parser.add_argument("-e",  dest="encrypt",  action="store_true",
@@ -506,6 +534,7 @@ def main():
     elif args.delete_file:     _delete(args)
     elif args.search_paths:    _search(args)
     elif args.web_paths:       _web(args)
+    elif args.qt_paths is not None: _qt(args)
     else:
         parser.print_help(); sys.exit(1)
 
