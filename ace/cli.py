@@ -12,6 +12,8 @@ Usage:
   onion --search <path> [...]         search .onion archives by metadata, no decompression
   onion --web <path> [...]            launch local web UI (browser, no install beyond stdlib)
   onion --qt [path...]                launch native desktop UI (requires: pip install PyQt6)
+  onion [--shell]                     launch the interactive shell (also the DEFAULT --
+                                       bare 'onion' with no other flags drops into it)
 
 Search options:
   --meta key=value          require this metadata field to match (repeatable, AND)
@@ -25,6 +27,20 @@ Search options:
 Web/desktop UI options:
   --port <n>                port for --web (default: 8000)
   (--qt takes no extra options beyond the starting path(s))
+
+Shell commands (once inside, type 'help' for the same list):
+  search [key=value ...] [any <text>]   search archives under the current directory
+  cd <path> / pwd                        move around / show current directory
+  compress <path> [-e] [-p pw]           compress a file/folder here
+           [--meta key=value ...]
+  web / qt                               launch the other frontends here (separate process)
+  daemon status | stop                   check or stop the background daemon
+  exit / quit                            leave the shell
+  Ties into a persistent local daemon (oniond) for a warm search cache
+  across commands in one session -- started automatically if not already
+  running, and left running after the shell exits (same pattern as e.g.
+  dockerd outliving the docker CLI). Any other Onion process on the same
+  machine discovers the same daemon automatically.
 
 Compress options:
   -o <path>                 output path (default: <name>.onion)
@@ -467,6 +483,11 @@ def _qt(args):
     sys.exit(app.exec())
 
 
+def _shell(args):
+    from .shell import OnionShell
+    OnionShell().run()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="onion",
@@ -502,6 +523,9 @@ def main():
     parser.add_argument("--qt", dest="qt_paths", metavar="PATH", nargs="*",
                         help="launch the PyQt6 desktop UI for browsing/searching archives, "
                              "optionally starting at PATH(s). Requires PyQt6 (pip install PyQt6).")
+    parser.add_argument("--shell", dest="shell", action="store_true",
+                        help="launch the interactive Onion shell (also the default when no "
+                             "other action is given -- bare 'onion' drops into the shell)")
 
     parser.add_argument("-o",  dest="output",   metavar="OUTPUT", help="output path")
     parser.add_argument("-e",  dest="encrypt",  action="store_true",
@@ -559,8 +583,9 @@ def main():
     elif args.search_paths:    _search(args)
     elif args.web_paths:       _web(args)
     elif args.qt_paths is not None: _qt(args)
+    elif args.shell:            _shell(args)
     else:
-        parser.print_help(); sys.exit(1)
+        _shell(args)
 
 
 if __name__ == "__main__":
