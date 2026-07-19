@@ -141,6 +141,27 @@ def matches_any_text(summary: Dict[str, Any], text: str) -> bool:
     return False
 
 
+def filter_summaries(
+    summaries: Iterator[Dict[str, Any]],
+    meta_filters: Optional[Dict[str, str]] = None,
+    any_text: Optional[str] = None,
+) -> Iterator[Dict[str, Any]]:
+    """
+    Same AND-semantics filtering as search(), but applied to summaries
+    already in hand (e.g. a daemon's held-in-memory base table) rather
+    than reading them from disk. search() itself delegates here after
+    doing its own disk I/O, so there is exactly one copy of the actual
+    matching logic regardless of where the summaries came from.
+    """
+    meta_filters = meta_filters or {}
+    for summary in summaries:
+        if any(not matches_meta_filter(summary, k, v) for k, v in meta_filters.items()):
+            continue
+        if any_text and not matches_any_text(summary, any_text):
+            continue
+        yield summary
+
+
 def search(
     paths: List[str],
     meta_filters: Optional[Dict[str, str]] = None,
@@ -153,16 +174,13 @@ def search(
     AND *any_text* (if given). With no filters at all, yields every
     archive found (i.e. "list everything").
     """
-    meta_filters = meta_filters or {}
-    for onion_path in iter_onion_files(paths, recursive=recursive):
-        summary = read_summary(onion_path)
-        if summary is None:
-            continue  # not a valid .onion file, skip silently
-        if any(not matches_meta_filter(summary, k, v) for k, v in meta_filters.items()):
-            continue
-        if any_text and not matches_any_text(summary, any_text):
-            continue
-        yield summary
+    def _read_all():
+        for onion_path in iter_onion_files(paths, recursive=recursive):
+            summary = read_summary(onion_path)
+            if summary is not None:
+                yield summary
+
+    yield from filter_summaries(_read_all(), meta_filters, any_text)
 
 
 # Future work: actual file CONTENT search (not just names) would require

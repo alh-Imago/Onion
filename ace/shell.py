@@ -147,6 +147,12 @@ Commands:
   web                                    launch the web UI here (separate process)
   qt                                     launch the desktop UI here (separate process)
   daemon status | stop                   check or stop the background daemon
+  daemon watch <path>                    add a directory to the persistent base table
+  daemon unwatch <path|index>             remove one (see 'daemon watched' for indices)
+  daemon watched                         list watched directories and their archive counts
+  daemon rescan [path]                    refresh the base table (one dir, or all if omitted)
+  search ... /r                          search one directory up from here, this search only
+  search ... /a                          search across ALL watched directories (needs the daemon)
   help                                   this message
   exit / quit                            leave the shell
 
@@ -183,8 +189,23 @@ Commands:
 
         `search key=value ...` / `search text` (arguments on the same
         line) run a single one-shot search, unaffected by any of the
-        above -- see parse_search_terms() for the term syntax."""
-        if not args:
+        above -- see parse_search_terms() for the term syntax.
+
+        Two scope flags, recognised anywhere in the argument list and
+        removed before the remaining terms are parsed normally:
+          /r  -- search one directory up from here, this search only
+                 (does not actually `cd`; just widens this one query)
+          /a  -- search across ALL watched directories (the daemon's
+                 persistent base table -- see `daemon watch`), not a
+                 live filesystem walk. Requires the daemon; a clear
+                 error is shown if it can't be reached, rather than
+                 silently falling back to something else.
+        """
+        scope_up = "/r" in args
+        scope_all = "/a" in args
+        args = [a for a in args if a not in ("/r", "/a")]
+
+        if not args and not scope_up and not scope_all:
             terms = self._guided_search_terms()
             if terms is None:
                 return  # cancelled, or fell back and already printed a note
@@ -192,8 +213,24 @@ Commands:
 
         meta_filters, any_text = self.parse_search_terms(args)
 
+        if scope_all:
+            if not self.sock:
+                print("Error: /a needs the daemon (for the watched-directories base table), "
+                      "but it isn't connected. Try 'daemon status'.")
+                return
+            resp = daemon.send_request(self.sock, "search_all",
+                                        {"meta_filters": meta_filters, "any_text": any_text})
+            if not resp.get("ok"):
+                print(f"Error: {resp.get('error')}")
+                return
+            results = resp["results"]
+            print(f"{len(results)} match(es) across {resp.get('watched_count', '?')} watched director(ies).")
+            self._print_results(results)
+            return
+
+        search_path = os.path.dirname(self.cwd) if scope_up else self.cwd
         request_args = {
-            "paths": [self.cwd], "meta_filters": meta_filters,
+            "paths": [search_path], "meta_filters": meta_filters,
             "any_text": any_text, "recursive": True,
         }
 
@@ -214,6 +251,9 @@ Commands:
         results = resp["results"]
         tag = " (cached)" if resp.get("cached") else ""
         print(f"{len(results)} match(es){tag}.")
+        self._print_results(results)
+
+    def _print_results(self, results):
         for r in results:
             enc = " [encrypted]" if r.get("encrypted") else ""
             tags = (r.get("meta") or {}).get("tags")
@@ -321,8 +361,77 @@ Commands:
                 self.sock = None
             else:
                 print("Not connected to a daemon.")
+        elif sub == "watch":
+            self._daemon_watch(args[1:])
+        elif sub == "unwatch":
+            self._daemon_unwatch(args[1:])
+        elif sub == "watched":
+            self._daemon_watched()
+        elif sub == "rescan":
+            self._daemon_rescan(args[1:])
         else:
-            print("Usage: daemon status | stop")
+            print("Usage: daemon status | stop | watch <path> | unwatch <path or index> | watched | rescan [path]")
+
+    def _require_daemon(self):
+        if not self.sock:
+            print("This needs the daemon, but it isn't connected. Try 'daemon status'.")
+            return False
+        return True
+
+    def _daemon_watch(self, args):
+        if not self._require_daemon():
+            return
+        if not args:
+            print("Usage: daemon watch <path>")
+            return
+        path = os.path.abspath(os.path.join(self.cwd, os.path.expanduser(args[0])))
+        resp = daemon.send_request(self.sock, "watch", {"path": path})
+        if resp.get("ok"):
+            print(f"Watching {resp['path']} ({resp['count']} archive(s)).")
+        else:
+            print(f"Error: {resp.get('error')}")
+
+    def _daemon_unwatch(self, args):
+        if not self._require_daemon():
+            return
+        if not args:
+            print("Usage: daemon unwatch <path or index> (see 'daemon watched' for indices)")
+            return
+        target = args[0]
+        req_args = {"index": int(target)} if target.isdigit() else \
+            {"path": os.path.abspath(os.path.join(self.cwd, os.path.expanduser(target)))}
+        resp = daemon.send_request(self.sock, "unwatch", req_args)
+        if resp.get("ok"):
+            print(f"No longer watching {resp['path']}.")
+        else:
+            print(f"Error: {resp.get('error')}")
+
+    def _daemon_watched(self):
+        if not self._require_daemon():
+            return
+        resp = daemon.send_request(self.sock, "watched")
+        watched = resp.get("watched", [])
+        if not watched:
+            print("Not watching any directories. Add one with: daemon watch <path>")
+            return
+        for i, entry in enumerate(watched):
+            print(f"  [{i}] {entry['path']}  ({entry['count']} archive(s))")
+
+    def _daemon_rescan(self, args):
+        if not self._require_daemon():
+            return
+        req_args = {}
+        if args:
+            req_args["path"] = os.path.abspath(os.path.join(self.cwd, os.path.expanduser(args[0])))
+        resp = daemon.send_request(self.sock, "rescan", req_args)
+        if not resp.get("ok"):
+            print(f"Error: {resp.get('error')}")
+            return
+        for entry in resp["rescanned"]:
+            if entry.get("error"):
+                print(f"  {entry['path']}: {entry['error']}")
+            else:
+                print(f"  {entry['path']}: {entry['count']} archive(s)")
 
 
 def main():

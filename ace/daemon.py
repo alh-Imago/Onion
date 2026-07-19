@@ -38,6 +38,7 @@ import time
 
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".onion")
 STATE_FILE = os.path.join(STATE_DIR, "daemon.json")
+WATCHED_FILE = os.path.join(STATE_DIR, "watched_dirs.txt")
 
 
 def _write_state(port: int):
@@ -52,6 +53,84 @@ def _read_state():
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def read_watched_dirs():
+    """Plain text, one path per line -- blank lines and '#' comments
+    ignored. Deliberately simple and hand-editable, not JSON: the point
+    is a user can open this in any text editor and understand it at a
+    glance, same reasoning as choosing plain TCP+JSON-lines over a
+    binary protocol for the daemon's own IPC."""
+    try:
+        with open(WATCHED_FILE) as f:
+            return [line.strip() for line in f
+                    if line.strip() and not line.strip().startswith("#")]
+    except OSError:
+        return []
+
+
+def write_watched_dirs(paths):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(WATCHED_FILE, "w") as f:
+        f.write("# Onion watched directories -- one path per line.\n")
+        f.write("# Hand-editable; the daemon re-reads this on startup, or\n")
+        f.write("# use 'daemon watch <path>' / 'daemon unwatch <path>' from the shell.\n")
+        for p in paths:
+            f.write(p + "\n")
+
+
+class BaseTable:
+    """The persistent base table the daemon holds in memory: watched
+    directories, each scanned once and kept until told to rescan.
+    Deliberately NOT a live filesystem watcher (that's the honest next
+    step after this one, per the sidecar design note) -- this table goes
+    stale the moment something changes on disk until 'daemon rescan' is
+    run. Keyed per watched directory so a single directory can be
+    rescanned/unwatched cleanly without touching the others."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._tables = {}  # watched_dir -> list of summary dicts
+
+    def watched_dirs(self):
+        with self._lock:
+            return list(self._tables.keys())
+
+    def scan_one(self, path):
+        from ace.search import search as run_search
+        summaries = list(run_search([path], meta_filters={}, any_text=None, recursive=True))
+        with self._lock:
+            self._tables[path] = summaries
+        return len(summaries)
+
+    def remove(self, path):
+        with self._lock:
+            self._tables.pop(path, None)
+
+    def count_for(self, path):
+        with self._lock:
+            return len(self._tables.get(path, []))
+
+    def all_summaries(self):
+        with self._lock:
+            combined = []
+            for summaries in self._tables.values():
+                combined.extend(summaries)
+            return combined
+
+    def load_from_disk(self):
+        """Called once at daemon startup: read the watched-dirs list and
+        scan each. A directory that's been removed/is unreadable since
+        the list was last written is skipped with a warning, not a crash."""
+        for path in read_watched_dirs():
+            if not os.path.isdir(path):
+                print(f"[oniond] Warning: watched directory no longer exists, skipping: {path}")
+                continue
+            count = self.scan_one(path)
+            print(f"[oniond] Watching {path} ({count} archive(s))")
+
+
+_base_table = BaseTable()
 
 
 class _SearchCache:
@@ -100,6 +179,16 @@ class _Handler(socketserver.StreamRequestHandler):
                     self._respond({"ok": True, "pong": True})
                 elif cmd == "search":
                     self._handle_search(request)
+                elif cmd == "search_all":
+                    self._handle_search_all(request)
+                elif cmd == "watch":
+                    self._handle_watch(request)
+                elif cmd == "unwatch":
+                    self._handle_unwatch(request)
+                elif cmd == "watched":
+                    self._handle_watched(request)
+                elif cmd == "rescan":
+                    self._handle_rescan(request)
                 elif cmd == "shutdown":
                     self._respond({"ok": True})
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -126,6 +215,76 @@ class _Handler(socketserver.StreamRequestHandler):
         _cache.put(paths, meta_filters, any_text, recursive, results)
         self._respond({"ok": True, "results": results, "cached": False})
 
+    def _handle_search_all(self, request):
+        """Queries the in-memory base table across ALL watched
+        directories -- no disk I/O, just filtering already-scanned
+        summaries. This is what the shell's `/a` scope calls."""
+        from ace.search import filter_summaries
+
+        args = request.get("args", {})
+        meta_filters = args.get("meta_filters", {})
+        any_text = args.get("any_text")
+
+        all_summaries = _base_table.all_summaries()
+        results = list(filter_summaries(all_summaries, meta_filters=meta_filters, any_text=any_text))
+        self._respond({"ok": True, "results": results, "watched_count": len(_base_table.watched_dirs())})
+
+    def _handle_watch(self, request):
+        path = os.path.abspath(request.get("args", {}).get("path", ""))
+        if not os.path.isdir(path):
+            self._respond({"ok": False, "error": f"Not a directory: {path}"})
+            return
+        watched = read_watched_dirs()
+        if path not in watched:
+            watched.append(path)
+            write_watched_dirs(watched)
+        count = _base_table.scan_one(path)
+        self._respond({"ok": True, "path": path, "count": count})
+
+    def _handle_unwatch(self, request):
+        args = request.get("args", {})
+        watched = read_watched_dirs()
+        target = None
+        if "index" in args:
+            idx = args["index"]
+            if 0 <= idx < len(watched):
+                target = watched[idx]
+        elif "path" in args:
+            candidate = os.path.abspath(args["path"])
+            if candidate in watched:
+                target = candidate
+        if target is None:
+            self._respond({"ok": False, "error": "Not currently watched."})
+            return
+        watched.remove(target)
+        write_watched_dirs(watched)
+        _base_table.remove(target)
+        self._respond({"ok": True, "path": target})
+
+    def _handle_watched(self, request):
+        watched = read_watched_dirs()
+        result = [{"path": p, "count": _base_table.count_for(p)} for p in watched]
+        self._respond({"ok": True, "watched": result})
+
+    def _handle_rescan(self, request):
+        path = request.get("args", {}).get("path")
+        watched = read_watched_dirs()
+        if path:
+            path = os.path.abspath(path)
+            if path not in watched:
+                self._respond({"ok": False, "error": f"Not currently watched: {path}"})
+                return
+            count = _base_table.scan_one(path)
+            self._respond({"ok": True, "rescanned": [{"path": path, "count": count}]})
+        else:
+            rescanned = []
+            for p in watched:
+                if os.path.isdir(p):
+                    rescanned.append({"path": p, "count": _base_table.scan_one(p)})
+                else:
+                    rescanned.append({"path": p, "count": None, "error": "no longer exists"})
+            self._respond({"ok": True, "rescanned": rescanned})
+
     def _respond(self, obj):
         self.wfile.write((json.dumps(obj) + "\n").encode("utf-8"))
 
@@ -140,6 +299,7 @@ def run():
     port = server.server_address[1]
     _write_state(port)
     print(f"[oniond] Listening on 127.0.0.1:{port} (pid {os.getpid()})")
+    _base_table.load_from_disk()
     try:
         server.serve_forever()
     finally:
