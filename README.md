@@ -673,6 +673,7 @@ onion:~/photos> exit
 | `compress <path> [-e] [-p pw] [--meta k=v ...]` | compress a file/folder here |
 | `web` / `qt` | launch the other frontends here, as a separate process |
 | `daemon status` / `daemon stop` | check or stop the background daemon |
+| *anything else* (`mv`, `cp`, `ls`, `dir`, `move`, `copy`, ...) | passes straight through to the real OS shell, using this shell's current directory |
 | `help` | this list, inside the shell |
 | `exit` / `quit` | leave the shell |
 
