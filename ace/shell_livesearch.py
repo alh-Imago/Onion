@@ -37,6 +37,46 @@ library rather than hand-rolling it.
 import threading
 
 
+def parse_search_terms(args):
+    """key=value pairs become metadata filters; every other bare word is
+    freetext, appended in order. The literal word 'any' is accepted but
+    optional/ignored. Lives here (not in shell.py) specifically so this
+    module's own accumulated-stats function and shell.py's one-shot
+    search both call the exact same parser -- two separate copies of the
+    same syntax would risk drifting out of sync with each other, which
+    would show a live count that disagrees with what Enter actually
+    returns."""
+    meta_filters = {}
+    any_parts = []
+    for token in args:
+        if token == "any":
+            continue
+        elif "=" in token:
+            k, _, v = token.partition("=")
+            meta_filters[k] = v
+        else:
+            any_parts.append(token)
+    any_text = " ".join(any_parts) or None
+    return meta_filters, any_text
+
+
+def make_accumulated_stats_fn(paths):
+    """Returns a callable(term_list) -> (dir_count, file_count) counting
+    how many directories/archives match the given committed terms so
+    far, parsed with parse_search_terms(). Used to show the running
+    "N directories, M files" narrowing indicator during guided search."""
+    from ace.search import search as run_search
+    import os
+
+    def stats_fn(term_list):
+        meta_filters, any_text = parse_search_terms(term_list)
+        results = list(run_search(paths, meta_filters=meta_filters, any_text=any_text, recursive=True))
+        dirs = {os.path.dirname(r["path"]) for r in results}
+        return len(dirs), len(results)
+
+    return stats_fn
+
+
 class LiveMatchState:
     """Tracks fast-index / deep-search status for the currently-typed text.
     Kept separate from any terminal-rendering code so the state machine
@@ -136,9 +176,17 @@ def make_deep_search_fn(paths):
     return deep_search
 
 
-def run_guided_search(known_terms, deep_search_fn, _input=None, _output=None):
+def run_guided_search(known_terms, deep_search_fn, accumulated_stats_fn=None, _input=None, _output=None):
     """Runs the live terminal UI; returns the list of committed term
     strings (empty list if cancelled with Ctrl-C).
+
+    accumulated_stats_fn(term_list) -> (dir_count, file_count), if given,
+    is called in the background after every Tab commit (and once at
+    startup, with an empty list) to show a running "N directories,
+    M files" indicator -- how far the committed terms so far are
+    narrowing the search, updated each time another term is added.
+    Computed off the main thread (same pattern as the deep-search
+    fallback) so a slower directory doesn't freeze typing while it runs.
 
     _input/_output are for automated testing only (inject a simulated
     terminal via prompt_toolkit's create_pipe_input()/DummyOutput()) --
@@ -150,17 +198,38 @@ def run_guided_search(known_terms, deep_search_fn, _input=None, _output=None):
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style
     from prompt_toolkit.lexers import Lexer
+    import threading
 
     committed = []
     state = LiveMatchState(known_terms, deep_search_fn)
     buf = Buffer()
     app_ref = {}
+    stats = {"dirs": None, "files": None, "computing": False, "generation": 0}
 
     def on_state_change():
         if app_ref.get("app"):
             app_ref["app"].invalidate()
 
     state.set_on_change(on_state_change)
+
+    def recompute_stats():
+        if not accumulated_stats_fn:
+            return
+        stats["computing"] = True
+        my_generation = stats["generation"]
+        on_state_change()
+
+        def worker():
+            dirs, files = accumulated_stats_fn(list(committed))
+            # Only apply if nothing's been committed/changed since this
+            # calculation started -- same stale-result guard as the
+            # per-term deep search, for the same reason.
+            if stats["generation"] == my_generation:
+                stats["dirs"], stats["files"] = dirs, files
+                stats["computing"] = False
+                on_state_change()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_text_changed(_):
         state.update_text(buf.text)
@@ -184,6 +253,8 @@ def run_guided_search(known_terms, deep_search_fn, _input=None, _output=None):
         if text:
             committed.append(text)
             buf.text = ""
+            stats["generation"] += 1
+            recompute_stats()
 
     @kb.add("enter")
     def _finish(event):
@@ -199,16 +270,32 @@ def run_guided_search(known_terms, deep_search_fn, _input=None, _output=None):
     def committed_text():
         return [("class:committed", "  ".join(f"[{t}]" for t in committed) or "(type a term, Tab to add another, Enter to search)")]
 
+    def stats_text():
+        if not accumulated_stats_fn:
+            return [("", "")]
+        if stats["computing"] and stats["dirs"] is None:
+            return [("class:stats", "counting...")]
+        if stats["dirs"] is None:
+            return [("", "")]
+        note = " (updating...)" if stats["computing"] else ""
+        return [("class:stats", f"{stats['dirs']} director{'y' if stats['dirs']==1 else 'ies'}, "
+                                  f"{stats['files']} file{'' if stats['files']==1 else 's'}{note}")]
+
+    stats_window = Window(FormattedTextControl(stats_text), height=1)
     input_window = Window(BufferControl(buffer=buf, lexer=StatusLexer()), height=1)
     committed_window = Window(FormattedTextControl(committed_text), height=1)
-    layout = Layout(HSplit([committed_window, input_window]))
+    layout = Layout(HSplit([stats_window, committed_window, input_window]))
 
     style = Style.from_dict({
         "found": "#00ff00 bold",
         "notfound": "#ff0000 bold",
         "searching": "#ffff00",
         "committed": "#888888",
+        "stats": "#00afff bold",
     })
+
+    if accumulated_stats_fn:
+        recompute_stats()  # baseline count (0 terms = everything) before the first keystroke
 
     app = Application(layout=layout, key_bindings=kb, style=style, full_screen=False,
                       input=_input, output=_output)

@@ -165,37 +165,32 @@ Commands:
             return
         self.cwd = target
 
-    def _cmd_search(self, args):
-        """Parses: key=value pairs become metadata filters; every other
-        bare word is freetext, appended in order. The 'any' keyword is
-        accepted but optional -- 'search invoice' and 'search any invoice'
-        do the same thing. (Previously a bare word with no 'any' keyword
-        was silently dropped instead of being treated as freetext --
-        `search invoice` looked like it worked but was actually running
-        an unfiltered search; fixed here.)
+    @staticmethod
+    def parse_search_terms(args):
+        """See shell_livesearch.parse_search_terms() -- the single shared
+        implementation, so the one-shot search and the guided live
+        search's running dir/file count always agree on what a given
+        term list means."""
+        from .shell_livesearch import parse_search_terms
+        return parse_search_terms(args)
 
-        Bare `search` (no arguments at all) launches the guided live
+    def _cmd_search(self, args):
+        """Bare `search` (no arguments at all) launches the guided live
         search instead of listing everything -- type a term, Tab to add
         another, Enter to run the accumulated search. Requires
         prompt_toolkit; falls back to listing everything with a note if
-        it isn't installed, rather than crashing."""
+        it isn't installed, rather than crashing.
+
+        `search key=value ...` / `search text` (arguments on the same
+        line) run a single one-shot search, unaffected by any of the
+        above -- see parse_search_terms() for the term syntax."""
         if not args:
             terms = self._guided_search_terms()
             if terms is None:
                 return  # cancelled, or fell back and already printed a note
             args = terms
 
-        meta_filters = {}
-        any_parts = []
-        for token in args:
-            if token == "any":
-                continue  # optional marker, kept for explicitness/readability
-            elif "=" in token:
-                k, _, v = token.partition("=")
-                meta_filters[k] = v
-            else:
-                any_parts.append(token)
-        any_text = " ".join(any_parts) or None
+        meta_filters, any_text = self.parse_search_terms(args)
 
         request_args = {
             "paths": [self.cwd], "meta_filters": meta_filters,
@@ -230,17 +225,22 @@ Commands:
         strings to be parsed the same way as normal `search` arguments,
         or None if cancelled (caller should just return)."""
         try:
-            from .shell_livesearch import gather_known_terms, make_deep_search_fn, run_guided_search
+            from .shell_livesearch import (
+                gather_known_terms, make_deep_search_fn,
+                make_accumulated_stats_fn, run_guided_search,
+            )
         except ImportError:
             print("(prompt_toolkit not installed -- listing everything instead. "
                   "Install it for guided live search: pip install prompt_toolkit)")
             return []
 
         print("Guided search: type a term (green=found, yellow=checking, red=not found).")
-        print("Tab adds another term, Enter searches, Ctrl-C cancels.\n")
+        print("Tab adds another term, Enter searches, Ctrl-C cancels.")
+        print("Top line shows how many directories/files your terms so far match.\n")
         known = gather_known_terms([self.cwd])
         deep = make_deep_search_fn([self.cwd])
-        terms = run_guided_search(known, deep)
+        stats_fn = make_accumulated_stats_fn([self.cwd])
+        terms = run_guided_search(known, deep, accumulated_stats_fn=stats_fn)
         if not terms:
             print("(cancelled, no search run)")
             return None
