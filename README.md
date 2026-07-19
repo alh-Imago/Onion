@@ -668,7 +668,7 @@ onion:~/photos> exit
 
 | Command | Does |
 |---|---|
-| `search [key=value ...] [any <text>]` | search archives under the current directory |
+| `search [key=value ...] [text ...]` | search archives here — `key=value` filters by metadata, any other bare word is freetext (`any` is accepted but optional: `search invoice` and `search any invoice` do the same thing) |
 | `cd <path>` / `pwd` | move around / show the current directory |
 | `compress <path> [-e] [-p pw] [--meta k=v ...]` | compress a file/folder here |
 | `web` / `qt` | launch the other frontends here, as a separate process |
