@@ -668,7 +668,8 @@ onion:~/photos> exit
 
 | Command | Does |
 |---|---|
-| `search [key=value ...] [text ...]` | search archives here — `key=value` filters by metadata, any other bare word is freetext (`any` is accepted but optional: `search invoice` and `search any invoice` do the same thing) |
+| `search` (no arguments) | **guided live search** — type a term, get instant green/yellow/red feedback, Tab to add another term, Enter to run. See below. |
+| `search [key=value ...] [text ...]` | one-shot search — `key=value` filters by metadata, any other bare word is freetext (`any` is accepted but optional: `search invoice` and `search any invoice` do the same thing) |
 | `cd <path>` / `pwd` | move around / show the current directory |
 | `compress <path> [-e] [-p pw] [--meta k=v ...]` | compress a file/folder here |
 | `web` / `qt` | launch the other frontends here, as a separate process |
@@ -676,6 +677,20 @@ onion:~/photos> exit
 | *anything else* (`mv`, `cp`, `ls`, `dir`, `move`, `copy`, ...) | passes straight through to the real OS shell, using this shell's current directory |
 | `help` | this list, inside the shell |
 | `exit` / `quit` | leave the shell |
+
+**Guided live search** (bare `search`, needs `pip install prompt_toolkit`
+— falls back to the old "list everything" behaviour with a note if it
+isn't installed): type a term and watch it turn **green** the moment it
+matches something already known from the archives here (a tag, a
+description, a filename inside a directory archive's TOC), **yellow**
+while a background deep search checks whether a full scan finds it
+anyway, or **red** if that deep search also comes up empty — genuinely
+not found, not just "not indexed yet." Tab commits the term and starts
+the next one; Enter runs the accumulated search; Ctrl-C cancels outright
+with nothing run. This is the "progressive/type-ahead search" idea from
+the sidecar/semantic-index design note realised as an actual shell
+feature — currently in its simplest form (a plain scan for the fast
+index, not yet a persistent one).
 
 **Backed by a persistent local daemon (`oniond`)**, started automatically
 the first time it's needed and left running afterward — the same
