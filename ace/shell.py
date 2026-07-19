@@ -7,6 +7,12 @@ PowerShell. Commands drop the `onion`/`--` prefix since you're already
 inside the Onion domain; the prompt makes that plain so it's never
 confused with the surrounding OS shell.
 
+Anything NOT recognised as an Onion command (mv, cp, ls, dir, move,
+copy, and so on) passes straight through to the real OS shell, run with
+this shell's own tracked cwd. Deliberate, not a gap to fill in later --
+this stays scoped to Onion's own operations; ordinary file/OS commands
+are the OS's job to handle, not something to reimplement here.
+
 Ties into the daemon (ace/daemon.py) for search, so repeated searches in
 one session are warm rather than cold-scanning the filesystem every
 time. Any frontend spawned from within the shell (web/qt) discovers the
@@ -103,8 +109,20 @@ class OnionShell:
         elif cmd == "daemon":
             self._cmd_daemon(rest)
         else:
-            print(f"Unknown command: {cmd!r}. Type 'help' for the command list.")
+            self._cmd_passthrough(line)
         return True
+
+    def _cmd_passthrough(self, line: str):
+        """Anything not recognised as an Onion command falls straight
+        through to the real OS shell -- mv/cp/ls/dir/move/copy/etc. all
+        just work, using the Onion shell's own tracked cwd, without this
+        shell needing to know or reimplement any of them. Deliberate
+        design, not a missing feature: this stays a domain-specific
+        prompt for Onion's own operations, and normal file/OS commands
+        are the OS's job, not something to duplicate here."""
+        result = subprocess.run(line, shell=True, cwd=self.cwd)
+        if result.returncode != 0:
+            print(f"(exit code {result.returncode})")
 
     def _cmd_help(self):
         print("""
@@ -119,6 +137,10 @@ Commands:
   daemon status | stop                   check or stop the background daemon
   help                                   this message
   exit / quit                            leave the shell
+
+  Anything else (mv, cp, ls, dir, move, copy, etc.) passes straight
+  through to the real OS shell, using this shell's current directory --
+  Onion doesn't reimplement general file operations, only its own.
 """)
 
     def _cmd_cd(self, args):
