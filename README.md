@@ -122,6 +122,9 @@ onion --web ~/archives
 
 # Or as a native desktop app (requires: pip install PyQt6)
 onion --qt ~/archives
+
+# Or just type 'onion' with no arguments -- drops into the interactive shell
+onion
 ```
 
 ---
@@ -641,6 +644,66 @@ onion --qt
 
 ---
 
+### Interactive shell: `--shell` (also the default — bare `onion`)
+
+```bash
+onion            # bare, no flags -- drops straight into the shell
+onion --shell    # same thing, explicit
+```
+
+A domain-specific interactive prompt — same category as `sqlite3`'s or
+`redis-cli`'s REPL, **not** a general-purpose shell replacing bash or
+PowerShell. The prompt (`onion:/current/path>`) makes it visually plain
+you're inside Onion's own command space, cleanly separate from the
+surrounding OS shell. Commands drop the `onion`/`--` prefix since
+there's no ambiguity about which program you're talking to:
+
+```
+onion:~/archives> search tags=invoice
+onion:~/archives> cd ../photos
+onion:~/photos> compress vacation.jpg -e
+onion:~/photos> web
+onion:~/photos> exit
+```
+
+| Command | Does |
+|---|---|
+| `search [key=value ...] [any <text>]` | search archives under the current directory |
+| `cd <path>` / `pwd` | move around / show the current directory |
+| `compress <path> [-e] [-p pw] [--meta k=v ...]` | compress a file/folder here |
+| `web` / `qt` | launch the other frontends here, as a separate process |
+| `daemon status` / `daemon stop` | check or stop the background daemon |
+| `help` | this list, inside the shell |
+| `exit` / `quit` | leave the shell |
+
+**Backed by a persistent local daemon (`oniond`)**, started automatically
+the first time it's needed and left running afterward — the same
+pattern as `dockerd` outliving the `docker` CLI, not tied to any one
+shell session. Repeated searches in a session hit a warm cache instead
+of cold-scanning the filesystem every time. Any other Onion process on
+the same machine (a second shell, a script) discovers and shares the
+same daemon automatically via a small state file
+(`~/.onion/daemon.json`) — no configuration needed for that part.
+
+Honest scope note: `web`/`qt`, when launched from inside the shell, run
+as genuinely separate processes and still do their own direct search
+calls today — they don't yet route those calls *through* the daemon.
+That's real, deliberately deferred follow-up work, not an oversight;
+changing already-working, tested code in `webui.py`/`qtui` to route
+through the daemon deserves its own careful pass rather than being
+bundled in here.
+
+If the daemon can't be reached for any reason, the shell falls back to
+direct (uncached, slower) calls rather than failing outright.
+
+```bash
+# Stop the daemon from outside the shell, if needed
+onion --shell
+onion:~> daemon stop
+```
+
+---
+
 ## Metadata reference
 
 The `--meta` flag accepts `key=value` pairs with automatic type inference:
@@ -760,6 +823,8 @@ onion/
     ├── search.py         ← Metadata/filename search across archives, no decompression
     ├── webui.py          ← Local web UI: search, browse, create, encrypt, verify
     ├── qtui/             ← PyQt6 desktop UI (optional extra), same feature set
+    ├── daemon.py         ← Background daemon (oniond): persistent process, warm search cache
+    ├── shell.py          ← Interactive shell (bare `onion`): domain-specific REPL, talks to daemon.py
     ├── cli.py            ← Full CLI
     └── algorithms/
         ├── rle.py        ← Literal + repeated-run token encoding
@@ -872,10 +937,20 @@ and hours.
 - ~~Native desktop UI~~ ✓ done — `--qt`, PyQt6 (optional extra), matching
   the web UI's feature set and palette as closely as Qt's styling model
   allows; native file/folder pickers instead of a custom navigator
+- ~~Interactive shell + persistent daemon~~ ✓ done — bare `onion` (or
+  `--shell`) drops into a domain-specific REPL, backed by `oniond`, a
+  real persistent background process with a warm search cache. Any
+  other Onion process on the machine discovers and shares the same
+  daemon automatically.
 - Extract-without-removing in the web UI *and* the Qt UI — `--unwrap`
   deletes the archive as part of restoring the file; there's no
   equivalent of plain `-d` (extract a *copy* while leaving the `.onion`
   in place) in either frontend yet, still CLI-only for now
+- Route `--web`/`--qt` search calls through the daemon rather than each
+  doing its own direct, uncached `ace.search` calls — the shell already
+  ties into the daemon; the other two frontends don't yet, on purpose
+  (touching their already-working search paths deserves its own careful
+  pass, not a change bundled in alongside the daemon's first build)
 
 ---
 
