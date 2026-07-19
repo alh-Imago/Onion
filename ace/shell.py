@@ -154,19 +154,23 @@ Commands:
         self.cwd = target
 
     def _cmd_search(self, args):
+        """Parses: key=value pairs become metadata filters; every other
+        bare word is freetext, appended in order. The 'any' keyword is
+        accepted but optional -- 'search invoice' and 'search any invoice'
+        do the same thing. (Previously a bare word with no 'any' keyword
+        was silently dropped instead of being treated as freetext --
+        `search invoice` looked like it worked but was actually running
+        an unfiltered search; fixed here.)"""
         meta_filters = {}
         any_parts = []
-        i = 0
-        mode_any = False
-        while i < len(args):
-            if args[i] == "any":
-                mode_any = True
-            elif mode_any:
-                any_parts.append(args[i])
-            elif "=" in args[i]:
-                k, _, v = args[i].partition("=")
+        for token in args:
+            if token == "any":
+                continue  # optional marker, kept for explicitness/readability
+            elif "=" in token:
+                k, _, v = token.partition("=")
                 meta_filters[k] = v
-            i += 1
+            else:
+                any_parts.append(token)
         any_text = " ".join(any_parts) or None
 
         request_args = {
