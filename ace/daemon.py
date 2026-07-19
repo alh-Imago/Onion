@@ -79,6 +79,24 @@ def write_watched_dirs(paths):
             f.write(p + "\n")
 
 
+def _find_in_watched(candidate, watched):
+    """Case-appropriate match against the watched list: exact on POSIX,
+    case-insensitive on Windows -- os.path.normcase() is a no-op on
+    POSIX and lowercases on Windows, matching each platform's own
+    filesystem convention (Windows paths are case-insensitive by
+    default; without this, 'daemon unwatch C:\\Users\\Alan\\Archives'
+    would silently fail to match an entry stored as
+    'c:\\users\\alan\\archives' even though it's the same directory).
+    Returns the ORIGINAL stored entry (not the normcased form) so
+    whatever's displayed/removed keeps its natural casing, or None if
+    nothing matches."""
+    target_norm = os.path.normcase(candidate)
+    for w in watched:
+        if os.path.normcase(w) == target_norm:
+            return w
+    return None
+
+
 class BaseTable:
     """The persistent base table the daemon holds in memory: watched
     directories, each scanned once and kept until told to rescan.
@@ -235,7 +253,7 @@ class _Handler(socketserver.StreamRequestHandler):
             self._respond({"ok": False, "error": f"Not a directory: {path}"})
             return
         watched = read_watched_dirs()
-        if path not in watched:
+        if _find_in_watched(path, watched) is None:
             watched.append(path)
             write_watched_dirs(watched)
         count = _base_table.scan_one(path)
@@ -251,8 +269,7 @@ class _Handler(socketserver.StreamRequestHandler):
                 target = watched[idx]
         elif "path" in args:
             candidate = os.path.abspath(args["path"])
-            if candidate in watched:
-                target = candidate
+            target = _find_in_watched(candidate, watched)
         if target is None:
             self._respond({"ok": False, "error": "Not currently watched."})
             return
@@ -271,11 +288,12 @@ class _Handler(socketserver.StreamRequestHandler):
         watched = read_watched_dirs()
         if path:
             path = os.path.abspath(path)
-            if path not in watched:
+            matched = _find_in_watched(path, watched)
+            if matched is None:
                 self._respond({"ok": False, "error": f"Not currently watched: {path}"})
                 return
-            count = _base_table.scan_one(path)
-            self._respond({"ok": True, "rescanned": [{"path": path, "count": count}]})
+            count = _base_table.scan_one(matched)
+            self._respond({"ok": True, "rescanned": [{"path": matched, "count": count}]})
         else:
             rescanned = []
             for p in watched:
@@ -321,6 +339,25 @@ def try_connect(timeout=0.3):
         return None
 
 
+def spawn_detached_kwargs():
+    """Extra subprocess.Popen() kwargs to fully detach a spawned child
+    (own process group/session, survives the parent exiting) --
+    platform-specific, and genuinely different, not just named
+    differently: start_new_session is POSIX-only (Python's own docs say
+    so explicitly; the Windows subprocess module doesn't have this
+    concept at all under that name). The Windows equivalent is
+    CREATE_NEW_PROCESS_GROUP combined with DETACHED_PROCESS -- both of
+    which only EXIST as subprocess module attributes on Windows, so
+    referencing them unconditionally would crash with AttributeError on
+    Linux/Mac. Used by both this module's own ensure_running() and
+    shell.py's frontend-spawning, so there's one place this platform
+    check lives rather than two copies that could drift apart."""
+    import subprocess
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+    return {"start_new_session": True}
+
+
 def ensure_running(startup_wait=3.0):
     """Connect to an existing daemon, or spawn a fresh one and wait for it
     to become reachable. Returns a connected socket, or raises RuntimeError
@@ -334,7 +371,7 @@ def ensure_running(startup_wait=3.0):
         [sys.executable, "-m", "ace.daemon"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
-        start_new_session=True,
+        **spawn_detached_kwargs(),
     )
 
     deadline = time.time() + startup_wait

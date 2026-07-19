@@ -340,7 +340,7 @@ Commands:
         subprocess.Popen(
             [sys.executable, "-m", "ace.cli", flag, self.cwd] + args,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **daemon.spawn_detached_kwargs(),
         )
 
     def _cmd_daemon(self, args):
