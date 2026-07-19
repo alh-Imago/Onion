@@ -1,9 +1,14 @@
 # Onion 🧅
 
-**Adaptive Layered Compression with a Searchable, Self-Describing Wrapper**
+**A Local Metadata & Search System, Built on a Compressed, Self-Describing Archive Format**
 
-Compress, encrypt, sign, and search thousands of archives by metadata or
-filename — without ever decompressing a single one.
+What started as an adaptive compression engine has grown into something
+closer to a small filesystem extension: compress and encrypt files, tag
+them with searchable metadata, and query thousands of archives by tag,
+description, or filename — without ever decompressing one — through a
+CLI, a web UI, a native desktop app, or an interactive shell, all backed
+by a persistent local daemon that remembers what you've told it between
+sessions.
 
 *v0.1.0 — A. Hill*
 
@@ -18,16 +23,53 @@ filename — without ever decompressing a single one.
 
 ---
 
+## What Onion actually is now
+
+It began as one thing — an adaptive layered compression engine — and the
+compression side of it is still solid on its own terms (see the
+[algorithms table](#algorithms) below). But the part that turned out to
+matter more is the **wrapper**: every `.onion` file carries a readable,
+searchable metadata block, and that idea has since grown outward into a
+small system in its own right, not just a file format:
+
+- **Four ways in** — a scriptable CLI, a browser-based UI, a native
+  PyQt6 desktop app, and an interactive shell with its own guided,
+  live-feedback search — all calling the same core, none of them a
+  reimplementation of the others.
+- **A persistent background daemon** (`oniond`), started automatically
+  and left running between sessions, holding a real base table of
+  watched directories rather than re-scanning the filesystem cold on
+  every query.
+- **A domain-specific shell** that stays out of the way of the OS it's
+  running on — ordinary commands (`mv`, `cp`, `ls`, `move`, `copy`, ...)
+  pass straight through to the real shell underneath, cross-platform.
+- **Encryption, signing, and verification** as first-class parts of the
+  same metadata wrapper, not bolted on separately.
+
+None of that makes the compression engine less real — it's still there,
+still does the job, still documented in full below. It just isn't the
+whole story anymore. The sections below cover it roughly in the order
+the system grew: the wrapper concept first (since everything else is
+built on it), then compression internals, then the CLI, then the web/
+desktop/shell frontends and the daemon underneath them.
+
+---
+
 ## The real strength: the wrapper
 
 Anyone can compress. `gzip`, `lz4`, `zstd` — compression is a solved,
-commoditised problem. **What Onion adds is the wrapper.**
+commoditised problem. **What Onion adds is the wrapper** — and, as of
+the frontends and daemon above, a real system built directly on top of
+that wrapper, not just a format that would let someone else build one.
 
 Every `.onion` file carries a readable header and metadata block that
 describes what is inside *before you open it*. No decompression required.
 A search routine scanning thousands of archives can read the wrapper of
 each one in microseconds and decide whether the content is relevant —
-then only decompress the ones it actually needs.
+then only decompress the ones it actually needs. This is exactly what
+`--search`, the guided shell search, and the daemon's persistent base
+table all actually do today, not a hypothetical capability the format
+merely permits.
 
 This is the invention. Not the compression algorithm. The header.
 
@@ -39,7 +81,9 @@ This is the invention. Not the compression algorithm. The header.
 
 - **Data cataloguing** — a collection of `.onion` files is self-cataloguing.
   Read the wrappers, build an index, query the index. The files themselves
-  never need to be opened until a result is needed.
+  never need to be opened until a result is needed. The daemon's watched-
+  directories base table (see the shell section below) is exactly this,
+  built and running, not just a property the format happens to allow.
 
 - **Schema declaration** — for structured data (SQL tables, sensor logs,
   concept graph data), the wrapper declares the domain, the concepts
