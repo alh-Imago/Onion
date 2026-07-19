@@ -705,7 +705,40 @@ the same machine (a second shell, a script) discovers and shares the
 same daemon automatically via a small state file
 (`~/.onion/daemon.json`) — no configuration needed for that part.
 
-Honest scope note: `web`/`qt`, when launched from inside the shell, run
+**Watched directories — a real persistent base table**, not just a
+cache: `daemon watch <path>` adds a directory the daemon scans once and
+keeps in memory across sessions, surviving daemon restarts via a plain
+text config file (`~/.onion/watched_dirs.txt`, one path per line, `#`
+comments allowed, hand-editable — the daemon re-reads it on startup).
+
+| Command | Does |
+|---|---|
+| `daemon watch <path>` | add a directory to the base table (scans it immediately) |
+| `daemon unwatch <path\|index>` | remove one — see `daemon watched` for the index numbers |
+| `daemon watched` | list watched directories with their archive counts |
+| `daemon rescan [path]` | refresh the table (one directory, or everything if omitted) |
+
+Two search scope flags build on this, recognised anywhere in the `search` arguments:
+- **`/r`** — search one directory up from here, this query only (doesn't
+  actually `cd`, just widens where this one search looks)
+  ```
+  onion:~/archives/2026/q3> search tags=invoice /r
+  ```
+- **`/a`** — search across *every* watched directory at once, querying
+  the persistent base table directly rather than walking the filesystem
+  live. Needs the daemon; shows a clear error rather than silently
+  falling back to something else if it's unreachable.
+  ```
+  onion:~/anywhere> search tags=invoice /a
+  ```
+
+Honest scope note: there's no live filesystem watcher yet, so the base
+table goes stale the moment a watched directory changes on disk until
+`daemon rescan` is run manually — the real watcher (inotify/RDCW, from
+the sidecar/semantic-index design note) is the natural next step after
+this one, not something this already does.
+
+Also still true: `web`/`qt`, when launched from inside the shell, run
 as genuinely separate processes and still do their own direct search
 calls today — they don't yet route those calls *through* the daemon.
 That's real, deliberately deferred follow-up work, not an oversight;
@@ -971,6 +1004,17 @@ and hours.
   ties into the daemon; the other two frontends don't yet, on purpose
   (touching their already-working search paths deserves its own careful
   pass, not a change bundled in alongside the daemon's first build)
+- ~~Persistent watched-directories base table~~ ✓ done — `daemon watch`/
+  `unwatch`/`watched`/`rescan`, a plain text config
+  (`~/.onion/watched_dirs.txt`), and `search /r` / `search /a` scope
+  flags. Survives daemon restarts (confirmed with a genuine stop/restart
+  test, not just assumed from the file existing).
+- A real filesystem watcher (inotify/RDCW) for the watched-directories
+  base table — right now it only refreshes on manual `daemon rescan`,
+  so it goes stale the moment something changes on disk. This is the
+  actual "sidecar" piece from the semantic-index design note; the base
+  table above is the persistent-storage half of that design, not the
+  live-update half.
 
 ---
 
