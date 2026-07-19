@@ -20,6 +20,15 @@ SAME daemon automatically via the shared state file
 (~/.onion/daemon.json) -- no explicit wiring needed for that part, it
 falls out of the daemon's discovery mechanism for free.
 
+Bare `search` (no arguments) launches a guided live search
+(shell_livesearch.py) instead of listing everything -- type a term, see
+live green/yellow/red feedback against known metadata with an automatic
+deep-search fallback on a miss, Tab to add another term, Enter to run
+the accumulated search. Requires prompt_toolkit (optional extra);
+falls back to the old list-everything behaviour with a note if it isn't
+installed, rather than crashing. `search key=value ...` (with arguments
+on the same line) is unaffected -- the original one-shot behaviour.
+
 Honest scope note: web/qt, when spawned from here, still do their own
 in-process ace.search calls today, same as when launched directly from
 the CLI -- they don't yet ROUTE their search calls through this daemon.
@@ -127,7 +136,10 @@ class OnionShell:
     def _cmd_help(self):
         print("""
 Commands:
-  search [key=value ...] [any <text>]   search archives under the current directory
+  search                                 guided live search (type a term, Tab
+                                          for another, Enter to run -- needs
+                                          prompt_toolkit, falls back if absent)
+  search [key=value ...] [any <text>]   one-shot search, same as before
   cd <path>                              change the shell's working directory
   pwd                                    show the current directory
   compress <path> [-e] [-p password]     compress a file/folder here
@@ -160,7 +172,19 @@ Commands:
         do the same thing. (Previously a bare word with no 'any' keyword
         was silently dropped instead of being treated as freetext --
         `search invoice` looked like it worked but was actually running
-        an unfiltered search; fixed here.)"""
+        an unfiltered search; fixed here.)
+
+        Bare `search` (no arguments at all) launches the guided live
+        search instead of listing everything -- type a term, Tab to add
+        another, Enter to run the accumulated search. Requires
+        prompt_toolkit; falls back to listing everything with a note if
+        it isn't installed, rather than crashing."""
+        if not args:
+            terms = self._guided_search_terms()
+            if terms is None:
+                return  # cancelled, or fell back and already printed a note
+            args = terms
+
         meta_filters = {}
         any_parts = []
         for token in args:
@@ -200,6 +224,27 @@ Commands:
             tags = (r.get("meta") or {}).get("tags")
             tag_str = f"  tags: {tags}" if tags else ""
             print(f"  {r['path']}{enc}{tag_str}")
+
+    def _guided_search_terms(self):
+        """Runs the live guided search UI, returns a list of term
+        strings to be parsed the same way as normal `search` arguments,
+        or None if cancelled (caller should just return)."""
+        try:
+            from .shell_livesearch import gather_known_terms, make_deep_search_fn, run_guided_search
+        except ImportError:
+            print("(prompt_toolkit not installed -- listing everything instead. "
+                  "Install it for guided live search: pip install prompt_toolkit)")
+            return []
+
+        print("Guided search: type a term (green=found, yellow=checking, red=not found).")
+        print("Tab adds another term, Enter searches, Ctrl-C cancels.\n")
+        known = gather_known_terms([self.cwd])
+        deep = make_deep_search_fn([self.cwd])
+        terms = run_guided_search(known, deep)
+        if not terms:
+            print("(cancelled, no search run)")
+            return None
+        return terms
 
     def _search_direct(self, request_args):
         from ace.search import search as run_search
