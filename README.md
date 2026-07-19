@@ -685,9 +685,13 @@ matches something already known from the archives here (a tag, a
 description, a filename inside a directory archive's TOC), **yellow**
 while a background deep search checks whether a full scan finds it
 anyway, or **red** if that deep search also comes up empty — genuinely
-not found, not just "not indexed yet." Tab commits the term and starts
-the next one; Enter runs the accumulated search; Ctrl-C cancels outright
-with nothing run. This is the "progressive/type-ahead search" idea from
+not found, not just "not indexed yet." A running **"N directories,
+M files"** count at the top shows how far your terms so far are
+narrowing things down — recomputed each time Tab commits another term,
+starting from a baseline count (everything here) before you've typed
+anything. Tab commits the term and starts the next one; Enter runs the
+accumulated search and shows full paths; Ctrl-C cancels outright with
+nothing run. This is the "progressive/type-ahead search" idea from
 the sidecar/semantic-index design note realised as an actual shell
 feature — currently in its simplest form (a plain scan for the fast
 index, not yet a persistent one).
