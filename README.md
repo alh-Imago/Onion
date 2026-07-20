@@ -25,21 +25,32 @@ sessions.
 
 ## What Onion actually is now
 
-It began as one thing — an adaptive layered compression engine — and the
-compression side of it is still solid on its own terms (see the
-[algorithms table](#algorithms) below). But the part that turned out to
-matter more is the **wrapper**: every `.onion` file carries a readable,
-searchable metadata block, and that idea has since grown outward into a
-small system in its own right, not just a file format:
+It's really three things sharing one codebase, not one thing with extra
+features bolted on — and they're genuinely separable, matching the
+module boundaries below, not just three ways of describing the same
+code:
 
-- **Four ways in** — a scriptable CLI, a browser-based UI, a native
-  PyQt6 desktop app, and an interactive shell with its own guided,
-  live-feedback search — all calling the same core, none of them a
-  reimplementation of the others.
-- **A persistent background daemon** (`oniond`), started automatically
-  and left running between sessions, holding a real base table of
-  watched directories rather than re-scanning the filesystem cold on
-  every query.
+1. **A compression format** (`ace/algorithms/`) — RLE, LZ77, Huffman,
+   LZMA, LZ4, delta, and an experimental split-stream Huffman. Solid on
+   its own terms, competing in an already-mature space.
+2. **A searchable, self-describing wrapper** (`ace/meta.py`, `toc.py`,
+   `search.py`) — the part that turned out to matter more: every
+   `.onion` file carries a readable metadata block, queryable without
+   ever decompressing the payload.
+3. **A local archive management platform** (`ace/webui.py`, `qtui/`,
+   `shell.py`, `daemon.py`) — CLI, web UI, native desktop app, and an
+   interactive shell, all backed by a persistent daemon holding a real
+   base table of watched directories. This is the newest and, at this
+   point, probably the most distinctive of the three.
+
+Someone could reasonably want only the first (just the compression
+algorithms, no interest in metadata at all), or the second without ever
+touching the daemon/UIs. Nothing here requires adopting all three.
+
+It began as just the first — an adaptive layered compression engine —
+and grew outward from there. Two details worth calling out specifically,
+since they're easy to undersell in a quick summary:
+
 - **A domain-specific shell** that stays out of the way of the OS it's
   running on — ordinary commands (`mv`, `cp`, `ls`, `move`, `copy`, ...)
   pass straight through to the real shell underneath, cross-platform.
