@@ -5,13 +5,22 @@ A persistent local process the shell connects to, instead of every
 command paying the cost of a fresh Python process + cold directory scan.
 Designed as the same seam the sidecar/semantic-index watcher (see
 docs/sidecar_semantic_index_design_note.md in the main Imago-Unicell
-repo) will eventually grow into -- this first version is a real,
-working daemon with a real IPC protocol, but the watcher/reconciliation
-side of that design is deliberately NOT implemented here yet. What's
-built now: process lifecycle (start, discover, connect), a minimal
-command dispatch (search, ping, shutdown), and a warm per-path result
-cache. What's NOT built yet, on purpose, left as a clean follow-up: the
-filesystem watcher, the master/local sidecar index, reconciliation.
+repo) grows into -- this is now a real, working daemon with a real IPC
+protocol AND a live filesystem watcher (ace/watcher.py, backed by the
+`watchdog` library) keeping the watched-directories base table current
+as files are created/modified/deleted/renamed, not just refreshed on a
+manual 'daemon rescan'. What's still NOT built, left as a clean
+follow-up: the master/local sidecar index (this daemon's base table
+covers .onion archives specifically, not the general-file sidecar
+concept the design note describes) and its reconciliation-on-reconnect
+logic for removable/offline media.
+
+Process lifecycle (start, discover, connect), a minimal command
+dispatch (search, ping, shutdown, watch/unwatch/watched/rescan,
+search_all), and a warm per-path result cache are all real and tested.
+If `watchdog` isn't installed, watching degrades gracefully to
+manual-rescan-only rather than crashing the daemon -- same pattern as
+PyQt6/prompt_toolkit elsewhere in this project.
 
 Protocol: newline-delimited JSON over a plain TCP socket bound to
 127.0.0.1 (port 0 -- OS picks a free port, avoiding collision with
@@ -99,53 +108,126 @@ def _find_in_watched(candidate, watched):
 
 class BaseTable:
     """The persistent base table the daemon holds in memory: watched
-    directories, each scanned once and kept until told to rescan.
-    Deliberately NOT a live filesystem watcher (that's the honest next
-    step after this one, per the sidecar design note) -- this table goes
-    stale the moment something changes on disk until 'daemon rescan' is
-    run. Keyed per watched directory so a single directory can be
-    rescanned/unwatched cleanly without touching the others."""
+    directories, each scanned once at watch-time and then kept live via
+    a DirectoryWatcher (ace/watcher.py) -- create/modify/delete/move
+    events update this table incrementally as they happen, rather than
+    only ever refreshing on a manual 'daemon rescan'. Keyed per watched
+    directory so a single directory can be rescanned/unwatched/re-
+    watched cleanly without touching the others; within a directory,
+    keyed by archive path so a single file's create/update/delete is an
+    O(1) dict operation, not a full directory re-list."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._tables = {}  # watched_dir -> list of summary dicts
+        self._tables = {}    # watched_dir -> {archive_path: summary}
+        self._watchers = {}  # watched_dir -> DirectoryWatcher
 
     def watched_dirs(self):
         with self._lock:
             return list(self._tables.keys())
 
     def scan_one(self, path):
+        """Full (re)scan of one watched directory -- used both for the
+        initial scan when a directory is first watched, and for the
+        manual 'daemon rescan' escape hatch (reconciliation sweep, for
+        whatever the live watcher might have missed while the daemon
+        wasn't running -- see the sidecar design note's reconnect
+        discussion; the same principle applies here)."""
         from ace.search import search as run_search
         summaries = list(run_search([path], meta_filters={}, any_text=None, recursive=True))
+        by_path = {s["path"]: s for s in summaries}
         with self._lock:
-            self._tables[path] = summaries
-        return len(summaries)
+            self._tables[path] = by_path
+        return len(by_path)
 
     def remove(self, path):
         with self._lock:
             self._tables.pop(path, None)
+        self._stop_watcher(path)
 
     def count_for(self, path):
         with self._lock:
-            return len(self._tables.get(path, []))
+            return len(self._tables.get(path, {}))
 
     def all_summaries(self):
         with self._lock:
             combined = []
-            for summaries in self._tables.values():
-                combined.extend(summaries)
+            for by_path in self._tables.values():
+                combined.extend(by_path.values())
             return combined
+
+    def _start_watcher(self, watched_dir):
+        if watched_dir in self._watchers:
+            return
+        try:
+            from .watcher import DirectoryWatcher
+        except ImportError:
+            print(f"[oniond] Warning: watchdog not installed -- {watched_dir} will only "
+                  f"refresh on 'daemon rescan', not live. Install it with: pip install watchdog")
+            return
+        w = DirectoryWatcher(watched_dir, lambda *a: self._on_event(watched_dir, *a))
+        w.start()
+        self._watchers[watched_dir] = w
+
+    def _stop_watcher(self, watched_dir):
+        w = self._watchers.pop(watched_dir, None)
+        if w:
+            w.stop()
+
+    def stop_all_watchers(self):
+        for watched_dir in list(self._watchers.keys()):
+            self._stop_watcher(watched_dir)
+
+    def _on_event(self, watched_dir, event_type, path, dest_path=None):
+        """Callback fed to this watched directory's DirectoryWatcher.
+        Only .onion files matter to this table -- anything else is
+        ignored here (this is the Onion-specific rule the generic
+        watcher module deliberately doesn't hardcode itself)."""
+        from ace.search import read_summary
+
+        def upsert(p):
+            if not p.lower().endswith(".onion"):
+                return
+            summary = read_summary(p)
+            with self._lock:
+                table = self._tables.get(watched_dir)
+                if table is None:
+                    return  # directory was unwatched concurrently with this event
+                if summary is not None:
+                    table[p] = summary
+                else:
+                    table.pop(p, None)  # existed as a name but isn't a valid archive (or was deleted mid-read)
+
+        def drop(p):
+            with self._lock:
+                table = self._tables.get(watched_dir)
+                if table is not None:
+                    table.pop(p, None)
+
+        if event_type in ("created", "modified"):
+            upsert(path)
+        elif event_type == "deleted":
+            drop(path)
+        elif event_type == "moved":
+            drop(path)
+            if dest_path:
+                upsert(dest_path)
 
     def load_from_disk(self):
         """Called once at daemon startup: read the watched-dirs list and
         scan each. A directory that's been removed/is unreadable since
-        the list was last written is skipped with a warning, not a crash."""
+        the list was last written is skipped with a warning, not a crash.
+        This full scan IS this session's reconciliation sweep -- it
+        naturally picks up anything that changed while the daemon wasn't
+        running, the same way the live watcher will pick up anything
+        that changes while it IS running, from this point forward."""
         for path in read_watched_dirs():
             if not os.path.isdir(path):
                 print(f"[oniond] Warning: watched directory no longer exists, skipping: {path}")
                 continue
             count = self.scan_one(path)
-            print(f"[oniond] Watching {path} ({count} archive(s))")
+            self._start_watcher(path)
+            print(f"[oniond] Watching {path} ({count} archive(s), live)")
 
 
 _base_table = BaseTable()
@@ -257,6 +339,7 @@ class _Handler(socketserver.StreamRequestHandler):
             watched.append(path)
             write_watched_dirs(watched)
         count = _base_table.scan_one(path)
+        _base_table._start_watcher(path)
         self._respond({"ok": True, "path": path, "count": count})
 
     def _handle_unwatch(self, request):
@@ -321,6 +404,7 @@ def run():
     try:
         server.serve_forever()
     finally:
+        _base_table.stop_all_watchers()
         try:
             os.remove(STATE_FILE)
         except OSError:

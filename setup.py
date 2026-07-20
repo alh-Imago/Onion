@@ -32,6 +32,7 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "cryptography>=41.0",
+        "watchdog>=3.0",
     ],
     extras_require={
         "qt": ["PyQt6>=6.4"],
