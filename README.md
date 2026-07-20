@@ -787,11 +787,17 @@ Two search scope flags build on this, recognised anywhere in the `search` argume
   onion:~/anywhere> search tags=invoice /a
   ```
 
-Honest scope note: there's no live filesystem watcher yet, so the base
-table goes stale the moment a watched directory changes on disk until
-`daemon rescan` is run manually — the real watcher (inotify/RDCW, from
-the sidecar/semantic-index design note) is the natural next step after
-this one, not something this already does.
+**Live, not just on manual rescan** — a filesystem watcher (`watchdog`,
+cross-platform) keeps the base table current automatically as watched
+directories change: create, edit, rename, delete, even a live metadata
+update via `--set-meta`, all reflected the moment they happen, no
+`daemon rescan` needed. `daemon rescan` still exists and still matters
+for one specific case: reconciling anything that changed while the
+daemon *wasn't* running (sleep, crash, not started yet) — the watcher
+only sees changes while it's actually alive; the full scan at daemon
+startup is what catches everything that happened before that. If
+`watchdog` isn't installed, a directory falls back to manual-rescan-only
+with a clear warning rather than the daemon failing to start.
 
 Also still true: `web`/`qt`, when launched from inside the shell, run
 as genuinely separate processes and still do their own direct search
@@ -1064,12 +1070,20 @@ and hours.
   (`~/.onion/watched_dirs.txt`), and `search /r` / `search /a` scope
   flags. Survives daemon restarts (confirmed with a genuine stop/restart
   test, not just assumed from the file existing).
-- A real filesystem watcher (inotify/RDCW) for the watched-directories
-  base table — right now it only refreshes on manual `daemon rescan`,
-  so it goes stale the moment something changes on disk. This is the
-  actual "sidecar" piece from the semantic-index design note; the base
-  table above is the persistent-storage half of that design, not the
-  live-update half.
+- ~~A real filesystem watcher~~ ✓ done — `watchdog` (cross-platform,
+  a real `install_requires` dependency since the daemon's watching is
+  core functionality, not an optional frontend), keeping the base table
+  current on create/modify/delete/rename as they happen, not just on
+  manual `daemon rescan`. Confirmed with real filesystem operations
+  against a real running daemon, not simulated. Degrades gracefully at
+  the code level if `watchdog` is somehow unavailable anyway (a
+  directory falls back to manual-rescan-only with a clear warning
+  rather than crashing the daemon), same defensive pattern used
+  elsewhere even for genuinely optional dependencies. `daemon rescan`
+  still matters for one specific case: reconciling changes that
+  happened while the daemon wasn't running at all
+  (sleep/crash/not-yet-started) — the watcher only sees changes while
+  it's alive; the startup scan is what covers everything before that.
 
 ---
 
