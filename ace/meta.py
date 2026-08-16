@@ -147,8 +147,15 @@ def parse_pairs(pairs: list) -> Dict[str, Any]:
     """
     Parse a list of "key=value" strings into a dict.
     Values that look like JSON arrays/objects are decoded;
-    comma-separated values become lists (for tags).
-    e.g. 'tags=cctv,void,june'  ->  {'tags': ['cctv', 'void', 'june']}
+    semicolon-separated values become lists (for tags).
+    e.g. 'tags=cctv;void;june'  ->  {'tags': ['cctv', 'void', 'june']}
+
+    Semicolon, not comma: a comma is common inside ordinary prose
+    (free-text fields like `reason=...` routinely contain one), so
+    auto-splitting on it silently mangled any such value into a list
+    instead of storing the sentence as written. Semicolons are rare
+    enough in casual technical writing that this collision is unlikely
+    in practice -- not impossible, just far less common.
     """
     result: Dict[str, Any] = {}
     for pair in pairs:
@@ -161,9 +168,9 @@ def parse_pairs(pairs: list) -> Dict[str, Any]:
         try:
             result[key] = json.loads(val)
         except json.JSONDecodeError:
-            # Comma-separated → list
-            if ',' in val:
-                result[key] = [v.strip() for v in val.split(',')]
+            # Semicolon-separated → list
+            if ';' in val:
+                result[key] = [v.strip() for v in val.split(';')]
             else:
                 result[key] = val
     return result

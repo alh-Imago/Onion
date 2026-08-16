@@ -367,7 +367,7 @@ onion -c footage/ -e -p "enc_password" --sign-key "hmac_secret"
 onion -c footage/ \
   --meta author="A. Hill" \
   --meta description="Nightly bundle — 14 Acacia Road" \
-  --meta tags="cctv,void,june-2026" \
+  --meta tags="cctv;void;june-2026" \
   --meta ref="case-2026-001" \
   --sign-key "shared_secret"
 
@@ -825,10 +825,20 @@ The `--meta` flag accepts `key=value` pairs with automatic type inference:
 | Value format | Python type | Example |
 |---|---|---|
 | `key=plain text` | `str` | `--meta author="A. Hill"` |
-| `key=a,b,c` | `list` | `--meta tags="cctv,void,june"` |
+| `key=a;b;c` | `list` | `--meta tags="cctv;void;june"` (semicolon, not comma -- see note below) |
 | `key=42` | `int` | `--meta priority=1` |
 | `key=true` / `key=false` | `bool` | `--meta archived=true` |
 | `key=["a","b"]` | `list` (JSON) | `--meta tags='["a","b"]'` |
+
+**Why semicolon, not comma, for auto-split lists:** a comma is common
+inside ordinary prose — a free-text field like `--meta reason="..."`
+routinely contains one — so auto-splitting on it silently mangled any
+such value into an unintended list instead of storing the sentence as
+written. Semicolons are rare enough in casual technical writing that
+this collision is unlikely in practice. If a value genuinely needs a
+literal semicolon and must NOT be split, pass it as JSON instead
+(`--meta reason='"text; with a semicolon"'`), which is checked first
+and bypasses auto-split entirely.
 
 **Reserved keys** (auto-populated if not supplied):
 

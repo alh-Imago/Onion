@@ -1130,7 +1130,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
           var k = row.querySelector('.meta-key').value.trim();
           var v = row.querySelector('.meta-val').value.trim();
           if (!k) return;
-          newMeta[k] = v.indexOf(',') !== -1 ? v.split(',').map(function(s) { return s.trim(); }) : v;
+          newMeta[k] = v.indexOf(';') !== -1 ? v.split(';').map(function(s) { return s.trim(); }) : v;
         });
         statusEl.textContent = 'Saving...';
         fetch('/api/set-meta', {
@@ -1373,7 +1373,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
       var k = row.querySelector('.meta-key').value.trim();
       var v = row.querySelector('.meta-val').value.trim();
       if (!k) return;
-      meta[k] = v.indexOf(',') !== -1 ? v.split(',').map(function(s) { return s.trim(); }) : v;
+      meta[k] = v.indexOf(';') !== -1 ? v.split(';').map(function(s) { return s.trim(); }) : v;
     });
 
     statusEl.textContent = 'Creating archive...';
