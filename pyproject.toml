@@ -1,0 +1,7 @@
+# Build configuration only. The package metadata stays in setup.py.
+# Without this file pip falls back to the legacy "setup.py develop" route, which fails on current
+# setuptools with "AttributeError: install_layout" (seen on Python 3.13, setuptools 68, 10 Oct 2026).
+# The C extensions are still built separately: python3 build_ext.py build_ext --inplace
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
