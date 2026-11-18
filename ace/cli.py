@@ -50,7 +50,7 @@ Compress options:
   --no-default-ignores      disable built-in ignore list (e.g. *.onion, __pycache__/, .git/)
   --no-audit                omit audit block
   --meta key=value          add metadata (repeatable)
-                            tags=a,b,c  →  list
+                            tags='a;b;c' →  list (semicolon-separated; quote it in a shell)
                             age=42      →  integer
   --sign-key <key>          HMAC-sign the archive with this key
   --fast                    use LZ4 instead of LZ77/LZMA (requires pip install lz4)

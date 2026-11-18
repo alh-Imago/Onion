@@ -23,6 +23,38 @@ sessions.
 
 ---
 
+## Try it in 60 seconds
+
+```bash
+git clone https://github.com/alh-Imago/Onion.git && cd Onion
+pip install cryptography && python build_ext.py build_ext --inplace && pip install -e .
+
+# Make a few archives and tag them (use ';' to separate multiple tags)
+mkdir archives
+onion -c acme_q3.txt -o archives/acme_q3.onion --meta 'tags=invoice;q3' --meta client=acme
+onion -c acme_q4.txt -o archives/acme_q4.onion --meta 'tags=invoice;q4' --meta client=acme
+onion -c cafe.txt    -o archives/cafe.onion    --meta tags=receipt
+
+# Find them by tag — reads only the headers, decompresses nothing
+onion --search archives --meta tags=invoice
+#   Onion Search — 2 match(es)
+#   archives/acme_q4.onion   tags: invoice, q4   contents: acme_q4.txt
+#   archives/acme_q3.onion   tags: invoice, q3   contents: acme_q3.txt
+
+onion --search archives --meta tags=invoice,q3   # both tags required -> 1 match
+onion --search archives --any acme               # free text: tags, metadata, filenames inside
+
+# Re-tag later without recompressing the payload
+onion --set-meta archives/acme_q4.onion --meta 'tags=invoice;q4;paid'
+
+onion --web archives                             # or browse it all in your browser
+```
+
+Tests: `python -m unittest discover -s tests`. Benchmarks against gzip/xz/zstd:
+[Benchmark results](#benchmark-results).
+
+---
+
 ## What Onion actually is now
 
 It's really three things sharing one codebase, not one thing with extra
@@ -105,9 +137,12 @@ This is the invention. Not the compression algorithm. The header.
   the payload. Tag a file, add a description, update a reference — O(metadata
   size), not O(file size).
 
-- **Verifiability** — signed metadata means the wrapper itself is
-  trustworthy. You know not just what the file claims to contain but
-  that the claim has not been tampered with.
+- **Verifiability** — an optional HMAC-SHA256 signature covers the
+  archive's header, payload, audit block and file list, so you can prove
+  the *contents* haven't been altered. The user metadata block (tags,
+  description, ...) is deliberately **not** covered, because it is meant
+  to stay editable after the fact without recompressing or re-signing.
+  Treat tags as convenience labels, not as signed claims.
 
 **For the UniCell concept graph specifically:** when empirical data tables
 are wrapped with Onion, the wrapper declares which concepts they contain
@@ -306,7 +341,7 @@ An optional JSON block recording the full compression recipe:
 An optional trailing block carrying arbitrary key-value metadata:
 - Auto-populated: `created` (UTC timestamp), `source_host` (hostname)
 - User-supplied: any key=value pairs via `--meta`
-- HMAC-SHA256 signing: signs everything before the META block
+- HMAC-SHA256 signing: signs everything before the META block (header, payload, audit, TOC) — not the metadata itself, so tags stay editable
 - Post-hoc editable: update metadata without recompressing the payload
 
 ### The TOC Block
@@ -480,8 +515,10 @@ onion --verify <file.onion> [--sign-key <key>]
 ```
 
 Verifies the HMAC-SHA256 signature against the archive. The HMAC covers
-everything before the META block (header + payload + audit), so any
-modification to the archive content will fail verification.
+everything before the META block (header + payload + audit + file list), so any
+modification to the archive *content* will fail verification. Editing the
+user metadata (tags, description, ...) does **not** invalidate the
+signature — by design, so metadata stays cheap to edit.
 
 Exit codes: `0` = valid, `1` = error (no HMAC / bad archive), `2` = invalid signature.
 
@@ -888,7 +925,7 @@ onion -c footage/ --fast -e
 onion -c classified.db --encrypt-only -p "secret"
 
 # Store raw, no encryption — just want it wrapped and searchable
-onion -c video_master.mov --no-compress --meta project="Q3 launch" --meta tags=video,final
+onion -c video_master.mov --no-compress --meta project="Q3 launch" --meta 'tags=video;final'
 
 # Store raw AND encrypted
 onion -c classified_photos/ --no-compress -e -p "secret"
@@ -904,27 +941,47 @@ onion -c report.pdf
 
 ## Benchmark results
 
-Tested against gzip-9, bz2-9, zlib-9 on typical file types:
+Measured 18 Nov 2026 with `benchmarks/compare.py` (Python 3.13, C extensions
+built, `zstandard` 19 and stdlib `xz` at preset 9). Figures are **% size
+reduction** — higher is better. JSON/CSV/log files are synthetic
+(randomly generated, so they compress better than most real-world data);
+"Python source" and "prose" are ~60KB slices of real files from a Linux
+machine. Run the script on your own files for numbers that matter to you. Small samples, so treat the last decimal
+as noise.
 
-| Dataset | Raw | onion | gzip-9 | bz2-9 |
+| Dataset | Raw | onion | gzip-9 | xz-9 | zstd-19 | bz2-9 |
+|---|---|---|---|---|---|---|
+| CSV (synthetic) | 31KB | 69.8% | 63.7% | 71.1% | 68.2% | 73.5% |
+| JSON (synthetic) | 108KB | 90.3% | 87.9% | 90.7% | 90.0% | 92.1% |
+| Log file (synthetic) | 67KB | 90.0% | 88.7% | 90.5% | 90.4% | 92.9% |
+| Prose (licence text) | 60KB | 71.9% | 69.9% | 72.5% | 71.4% | 71.8% |
+| Python source | 60KB | 74.5% | 73.4% | 75.1% | 74.8% | 74.8% |
+
+On text-like data Onion's ratio is essentially **xz's** (it uses the
+stdlib LZMA layer there), landing within about 1.5 points of xz and zstd-19
+and a little ahead of gzip-9. It does not beat any of them — the compression
+is not the selling point, the wrapper is. An earlier version of this table
+(pre-LZMA layer) showed Onion well behind gzip; that is no longer true.
+
+**Overhead:** the Gain Monitor prunes any layer that doesn't help, so the
+*payload* never grows. The archive does carry fixed overhead: about 83 bytes
+of header, plus a ~240-byte audit block unless you pass `--no-audit`. On
+30KB of random data: 30,326 bytes by default, 30,083 with `--no-audit`
+(gzip: 30,029).
+
+**Speed** (best of 3, compress only, includes the C-extension LZ77/Huffman
+path where selected):
+
+| Dataset | onion | gzip-9 | xz-9 | zstd-19 |
 |---|---|---|---|---|
-| Repetitive text | 22KB | 96.7% | 99.4% | 99.3% |
-| Prose | 18KB | 96.4% | 99.1% | 98.9% |
-| JSON config | 70KB | 93.2% | 95.8% | 97.8% |
-| CSV data | 74KB | 76.3% | 77.7% | 86.5% |
-| Log file | 50KB | 85.8% | 90.5% | 94.0% |
-| Python source | 59KB | 62.3% | 74.8% | 76.2% |
-| Already gzipped | — | ~pass-through | expands | expands |
+| CSV 31KB | 62ms | 1ms | 36ms | 9ms |
+| JSON 108KB | 137ms | 2ms | 52ms | 51ms |
+| Log 67KB | 79ms | 1ms | 47ms | 38ms |
+| Prose 60KB | 69ms | 2ms | 43ms | 17ms |
+| Python 60KB | 96ms | 2ms | 44ms | 20ms |
 
-Onion is 1–5% behind gzip on most data. The Gain Monitor means it **never makes a file larger**.
-
-**Speed** (C extensions active):
-
-| Dataset | onion | gzip-9 |
-|---|---|---|
-| 74KB CSV | 20ms | 5ms |
-| 50KB log | 14ms | 1ms |
-| 59KB Python source | 25ms | 6ms |
+Onion is roughly 1.5–3× slower than xz-9, since it tries more than one
+pipeline and prunes. Reproduce with `python benchmarks/compare.py <files...>`.
 
 ---
 
