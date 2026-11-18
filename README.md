@@ -27,7 +27,7 @@ sessions.
 
 ```bash
 git clone https://github.com/alh-Imago/Onion.git && cd Onion
-pip install cryptography && python build_ext.py build_ext --inplace && pip install -e .
+pip install cryptography setuptools wheel && python build_ext.py build_ext --inplace && pip install -e .
 
 # Make a few archives and tag them (use ';' to separate multiple tags)
 mkdir archives
@@ -175,7 +175,7 @@ optionally signed metadata — all readable without extracting.
 
 ```bash
 # Install dependencies
-pip install cryptography
+pip install cryptography setuptools wheel
 
 # Build C extensions (LZ77 + Huffman — required for usable performance)
 python build_ext.py build_ext --inplace
